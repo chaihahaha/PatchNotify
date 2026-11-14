@@ -43,6 +43,11 @@ android {
     buildFeatures {
         viewBinding = true
     }
+
+    // .tenz 已经是熵编码后的数据，别让 aapt 再 deflate 一遍
+    androidResources {
+        noCompress.add("tenz")
+    }
 }
 
 dependencies {
@@ -57,8 +62,6 @@ dependencies {
     implementation("androidx.camera:camera-camera2:$camerax")
     implementation("androidx.camera:camera-lifecycle:$camerax")
     implementation("androidx.camera:camera-view:$camerax")
-
-    // Bundled (offline) Chinese + Latin text recognition model.
 
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
 

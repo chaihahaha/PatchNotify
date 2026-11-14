@@ -99,7 +99,7 @@ class MainActivity : AppCompatActivity() {
 
     companion object {
         /** 每次发版改这里，屏幕上会显示，便于确认装的是哪个包 */
-        const val BUILD_TAG = "v84-split"
+        const val BUILD_TAG = "v85-bundle"
         private const val REQ_PERMS = 1001
         private const val FRAME_INTERVAL_MS = 250L      // 4 fps
         private const val ROUND_BUDGET_MS = 200L
@@ -112,6 +112,14 @@ class MainActivity : AppCompatActivity() {
         setContentView(binding.root)
 
         patches.addAll(ConfigStore.load(this))
+
+        // 免配置安装包：首次启动把 assets 里的 .tenz 解到 sdcard（普通包会直接跳过）
+        if (ModelBundle.bundled(this)) {
+            Thread {
+                ModelBundle.ensure(this) { msg -> runOnUiThread { setStatus(msg) } }
+                runOnUiThread { refreshPatchList() }
+            }.start()
+        }
 
         localModelDir = getSharedPreferences("patchnotify", MODE_PRIVATE)
             .getString("modelDir", localModelDir) ?: localModelDir

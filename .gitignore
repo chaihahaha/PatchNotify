@@ -47,3 +47,9 @@ models/
 *.jpeg
 *.png
 *.webp
+
+# 免配置安装包里的模型资产（体积太大，不入库）
+app/src/main/assets/**/*.tenz
+
+# tenz 构建目录
+.tenz-build/

@@ -169,3 +169,19 @@ CPU 版本还带来两个副作用：不占 GPU，相机预览不卡；没有 Vu
 ## 许可证
 
 本项目以 GNU General Public License v3.0 发布，全文见 [LICENSE](LICENSE)。
+
+## 免配置安装包（模型打进 APK）
+
+默认 APK 不含权重，用户自己导入模型。想做成装完就能用的版本，把压缩后的模型放进 assets：
+
+```
+app/src/main/assets/model/model.gguf.tenz      Qwen3.5-2B Q4_0，tenz 压后 1049 MiB
+app/src/main/assets/mmproj/mmproj.gguf.tenz    mmproj 量化到 Q8_0 再 tenz，310 MiB
+```
+
+- 首次启动时 `ModelBundle` 把资产拷到 `<sdcard>/patchnotify/qwen_2b/`，调 `libtenz.so` 解压，
+  校验字节数后删掉临时文件；两个文件都在就直接跳过。
+- 普通构建的 assets 里没有这些文件，`ModelBundle.bundled()` 返回 false，整段逻辑不执行。
+- 生成资产：`./scripts/make-model-assets.sh`（需要 llama-quantize 和网络拉 tenz 源码）。
+- 代价：APK 约 1.4 GB；安装要先复制进 `/data/app`，首次启动再解压到 sdcard，
+  峰值需要约 3 GB 空闲。
