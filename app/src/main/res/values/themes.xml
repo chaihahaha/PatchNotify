@@ -1,0 +1,7 @@
+<resources>
+    <style name="Theme.PatchNotify" parent="Theme.AppCompat.DayNight.NoActionBar">
+        <item name="colorPrimary">#FF1E88E5</item>
+        <item name="colorPrimaryDark">#FF0D47A1</item>
+        <item name="colorAccent">#FF1E88E5</item>
+    </style>
+</resources>

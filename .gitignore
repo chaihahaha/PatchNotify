@@ -1,0 +1,48 @@
+# 构建产物
+build/
+app/build/
+app/.cxx/
+.externalNativeBuild/
+.cxx/
+.gradle/
+*.apk
+*.aab
+*.ap_
+*.apk.zip
+*.dex
+*.class
+*.hprof
+captures/
+
+# 本机配置（含本机 SDK / CMake 绝对路径）
+local.properties
+.idea/
+*.iml
+*.iws
+.DS_Store
+
+# 原生二进制：体积大，且随 ONNX Runtime 版本变化
+*.so
+*.aar
+*.dylib
+*.jar
+app/src/main/jniLibs/
+app/src/main/cpp/thirdparty/
+
+# 模型权重
+*.onnx
+*.onnx_data
+*.gguf
+*.safetensors
+*.bin
+*.pt
+*.pth
+models/
+
+# 运行日志、调试截图、抓帧数据
+*.log
+*.raw
+*.jpg
+*.jpeg
+*.png
+*.webp
