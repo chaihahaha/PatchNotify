@@ -283,6 +283,22 @@ object ConditionParser {
             val t = line.trim()
             if (t.isEmpty() || t.startsWith("#")) continue
 
+            // 自然语言规则：以中文句号结尾的描述，交给模型判断「是/否」
+            val pIdx = t.indexOf('。')
+            if (pIdx > 0) {
+                val desc = t.substring(0, pIdx + 1).trim()
+                var rest = t.substring(pIdx + 1).trim()
+                var nsecs = 5
+                var say = rest
+                if (rest.isNotEmpty()) {
+                    val ps = rest.split(Regex("\\s+")).filter { it.isNotEmpty() }
+                    val last = ps.lastOrNull()?.toIntOrNull()
+                    if (last != null) { nsecs = last; say = ps.dropLast(1).joinToString(" ") }
+                }
+                rules.add(Rule("~" + desc, say, nsecs.coerceIn(1, 120)))
+                continue
+            }
+
             // 两种写法都认：
             //   新（推荐，手机上少打字）：len>6600 好了 5
             //   旧：len > 6600 => 好了 => 5
@@ -335,5 +351,9 @@ object ConditionParser {
 
     /** Rule 列表 → 编辑框文本 */
     fun rulesToText(rules: List<Rule>): String =
-        rules.joinToString("\n") { "${it.expr} => ${it.speech} => ${it.seconds}" }
+        rules.joinToString("\n") {
+            if (it.expr.startsWith("~")) {
+                (it.expr.substring(1) + " " + it.speech + " " + it.seconds).trim()
+            } else "${it.expr} => ${it.speech} => ${it.seconds}"
+        }
 }

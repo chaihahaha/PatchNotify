@@ -67,6 +67,13 @@ class MainActivity : AppCompatActivity() {
     private var busy = false
     private var busyAt = 0L
     private var lastBusyLogAt = 0L
+    private var lastCropDumpAt = 0L
+    private var lastFrameSize = ""
+    private var lastSig: IntArray? = null
+    private var lastOcrResult: String? = null
+    private var lastOcrAt = 0L
+    /** 自然语言规则("\~描述")的判定结果，键 = patchId|expr */
+    private val nlHits = mutableMapOf<String, Boolean>()
 
     private var tts: TextToSpeech? = null
     private var ttsReady = false
@@ -87,7 +94,6 @@ class MainActivity : AppCompatActivity() {
     private var frameSeq = 0
     private var lastNullLogAt = 0L
     private var localBusy = false
-    private var cpuOnly = false
     private var localReady = false
     private var localModelDir = java.io.File(
         android.os.Environment.getExternalStorageDirectory(), "patchnotify/qwen_2b"
@@ -111,7 +117,7 @@ class MainActivity : AppCompatActivity() {
 
     companion object {
         /** 每次发版改这里，屏幕上会显示，便于确认装的是哪个包 */
-        const val BUILD_TAG = "v38-runonly"
+        const val BUILD_TAG = "v61-cpu-clean"
         private const val REQ_PERMS = 1001
         private const val FRAME_INTERVAL_MS = 250L      // 4 fps
         private const val OCR_BUDGET_MS = 200L
@@ -145,8 +151,9 @@ class MainActivity : AppCompatActivity() {
             pref0.edit().putBoolean("shift20", true).apply()
         }
 
-        cpuOnly = getSharedPreferences("patchnotify", MODE_PRIVATE).getBoolean("cpuOnly", false)
-        pnLog("=== 启动 $BUILD_TAG 权限=${hasAllFilesAccess()} 目录=${java.io.File(localModelDir, "onnx").isDirectory} ===")
+        val soc = if (android.os.Build.VERSION.SDK_INT >= 31) android.os.Build.SOC_MODEL else "?"
+        pnLog("=== 启动 $BUILD_TAG 权限=${hasAllFilesAccess()} ===")
+        pnLog("device: model=${android.os.Build.MODEL} soc=$soc hw=${android.os.Build.HARDWARE} abi=${android.os.Build.SUPPORTED_ABIS.firstOrNull()}")
         initTts()
         setupUi()
 
@@ -306,7 +313,8 @@ class MainActivity : AppCompatActivity() {
                    "例：\n${p.field}>6600 好了 5\n${p.field}>6700 第二条 5\n" +
                    "条件里可以带空格（${p.field} > 6600 和 ${p.field}>6600 都认）\n" +
                    "播报内容省略 = 只响「嘟嘟嘟」提示音\n" +
-                   "秒数省略 = 默认 5 秒；旧写法 ${p.field}>6600=>好了=>5 也还认"
+                   "秒数省略 = 默认 5 秒；旧写法 ${p.field}>6600=>好了=>5 也还认\n" +
+                   "也支持中文描述（以句号结尾），由模型判断是/否：\n瓶子里有白色药片。 提醒 10"
             textSize = 11f
             setTextColor(0xFF888888.toInt())
         })
@@ -380,12 +388,6 @@ class MainActivity : AppCompatActivity() {
             text = "选择文件夹…"
             setOnClickListener { pickModelDir(dirInput) }
         })
-        val cpuOnlyBox = android.widget.CheckBox(this).apply {
-            text = "禁用 NNAPI（改用 CPU：慢一些，但数值更准）"
-            textSize = 12f
-            isChecked = getSharedPreferences("patchnotify", MODE_PRIVATE).getBoolean("cpuOnly", false)
-        }
-        layout.addView(cpuOnlyBox)
         layout.addView(Button(this).apply {
             text = "导入模型到 App 内（不需要权限）"
             setOnClickListener { importModelDir(dirInput) }
@@ -416,10 +418,6 @@ class MainActivity : AppCompatActivity() {
                 p.pick = pickKeys[spinner.selectedItemPosition.coerceIn(0, 2)]
                 p.mode = modeKeys[modeSpinner.selectedItemPosition.coerceIn(0, 3)]
                 p.kind = kindKeys[kindSpinner.selectedItemPosition.coerceIn(0, 3)]
-                cpuOnly = cpuOnlyBox.isChecked
-                getSharedPreferences("patchnotify", MODE_PRIVATE).edit()
-                    .putBoolean("cpuOnly", cpuOnly).apply()
-                NativeOcr.setCpuOnly(cpuOnly)
                 localModelDir = dirInput.text.toString().trim().trimEnd('/')
                 localReady = false
                 getSharedPreferences("patchnotify", MODE_PRIVATE).edit()
@@ -626,7 +624,9 @@ class MainActivity : AppCompatActivity() {
                 localBusy = true
                 val bmp = crop
                 val kind = when (p.kind) { "cn" -> 1; "en" -> 2; "mix" -> 3; else -> 0 }
-                pnLog("local: 进入 patch=${p.field} crop=${bmp.width}x${bmp.height} kind=$kind")
+                val fs = "${bmp.width}x${bmp.height}"
+                if (fs != lastFrameSize) { lastFrameSize = fs; pnLog("local: 整帧=${bitmap.width}x${bitmap.height} crop=$fs") }
+                pnLog("local: 进入 patch=${p.field} crop=$fs kind=$kind")
                 val found = resolveModelDir()
                 if (found != localModelDir) { pnLog("local: 换用 $found"); localModelDir = found }
                 Thread {
@@ -636,14 +636,24 @@ class MainActivity : AppCompatActivity() {
                             pnLog("local: 开始加载模型…")
                             val st = NativeOcr.probe(localModelDir)
                             pnLog("local: probe → $st")
-                            localReady = st.startsWith("vis=1")
+                            localReady = st == "ok" || st.startsWith("ok ")
                             if (!localReady) {
-                                val d = java.io.File(localModelDir, "onnx")
-                                r = if (!d.isDirectory) "找不到模型目录：$localModelDir（点“设条件”→检测模型目录）"
-                                    else "模型加载失败（3 个 .onnx 是否齐全？）"
+                                r = if (st.startsWith("ERR:")) st + "（点“设条件”→检测模型目录）"
+                                    else "模型加载失败：$st"
                             }
                         }
                         if (localReady) {
+                            // 诊断：每 5 秒存一张实际喂给模型的裁剪图
+                            val nowDump = SystemClock.elapsedRealtime()
+                            if (nowDump - lastCropDumpAt > 5000) {
+                                lastCropDumpAt = nowDump
+                                try {
+                                    java.io.File(logDir(), "last_crop.jpg").outputStream().use {
+                                        bmp.compress(android.graphics.Bitmap.CompressFormat.JPEG, 92, it)
+                                    }
+                                    pnLog("local: 已存 last_crop.jpg ${bmp.width}x${bmp.height}")
+                                } catch (e: Exception) { pnLog("dump crop 失败: ${e.message}") }
+                            }
                             val bw = bmp.width; val bh = bmp.height
                             val px = IntArray(bw * bh)
                             bmp.getPixels(px, 0, bw, 0, 0, bw, bh)
@@ -654,15 +664,60 @@ class MainActivity : AppCompatActivity() {
                                 rgb[i * 3 + 1] = ((c shr 8) and 0xFF).toByte()
                                 rgb[i * 3 + 2] = (c and 0xFF).toByte()
                             }
-                            val t0 = SystemClock.elapsedRealtime()
-                            r = NativeOcr.ocr(rgb, bw, bh, kind)
-                            if (r.startsWith("ERR:TOOBIG:")) {
-                                val a = r.split(":")
-                                r = "框太大：${a.getOrNull(2)} 个图像token（上限 ${a.getOrNull(3)}），请把框划小一点"
+                            // 自然语言规则：逐条让模型判断「是/否」
+                            val nl = p.rules.filter { it.expr.startsWith("~") }
+                            if (nl.isNotEmpty()) {
+                                var anyYes = false
+                                for (rule in nl) {
+                                    val desc = rule.expr.substring(1)
+                                    val out = NativeOcr.ocrPrompt(rgb, bw, bh, desc)
+                                    val yes = out.trimStart().startsWith("是")
+                                    nlHits[p.id + "|" + rule.expr] = yes
+                                    if (yes) anyYes = true
+                                    pnLog("NL 「$desc」 → $out → ${if (yes) "是" else "否"}")
+                                }
+                                r = if (anyYes) "是" else "否"
+                                bmp.recycle(); localBusy = false
+                                runOnUiThread { onRead(p, r) }
+                                return@Thread
                             }
-                            val dt = (SystemClock.elapsedRealtime() - t0) / 1000.0
-                            pnLog("local: ocr → 「$r」 用时 %.1fs".format(dt))
-                            runOnUiThread { setStatus("本地 ${String.format("%.1f", dt)}s ${bmp.width}x${bmp.height} → 「$r」") }
+                            // 画面几乎没变就直接复用上次结果，避免每帧都白跑一次推理
+                            val sig = try {
+                                val sw = 48; val sh = 20
+                                val sc = android.graphics.Bitmap.createScaledBitmap(bmp, sw, sh, true)
+                                val sp = IntArray(sw * sh)
+                                sc.getPixels(sp, 0, sw, 0, 0, sw, sh); sc.recycle()
+                                IntArray(sw * sh) { i ->
+                                    val c = sp[i]
+                                    (((c shr 16) and 0xFF) * 299 + ((c shr 8) and 0xFF) * 587 + (c and 0xFF) * 114) / 1000
+                                }
+                            } catch (e: Throwable) { null }
+                            val prev = lastSig
+                            var changed = true
+                            if (prev != null && sig != null && prev.size == sig.size) {
+                                var n = 0
+                                for (i in sig.indices) if (kotlin.math.abs(sig[i] - prev[i]) > 28) n++
+                                changed = n > sig.size * 15 / 1000
+                            }
+                            val cached = lastOcrResult
+                            if (!changed && cached != null && !cached.startsWith("ERR") &&
+                                SystemClock.elapsedRealtime() - lastOcrAt < 120_000) {
+                                r = cached
+                                pnLog("local: 画面未变化，复用「$r」")
+                            } else {
+                                val t0 = SystemClock.elapsedRealtime()
+                                r = NativeOcr.ocr(rgb, bw, bh, kind)
+                                if (r.startsWith("ERR:TOOBIG:")) {
+                                    val a = r.split(":")
+                                    r = "框太大：${a.getOrNull(2)} 个图像token（上限 ${a.getOrNull(3)}），请把框划小一点"
+                                }
+                                lastSig = sig
+                                lastOcrResult = r
+                                lastOcrAt = SystemClock.elapsedRealtime()
+                                val dt = (SystemClock.elapsedRealtime() - t0) / 1000.0
+                                pnLog("local: ocr → 「$r」 用时 %.1fs".format(dt))
+                                runOnUiThread { setStatus("本地 ${String.format("%.1f", dt)}s ${bmp.width}x${bmp.height} → 「$r」") }
+                            }
                         }
                     } catch (e: Throwable) {
                         r = "ERR:" + (e.message ?: "").take(40)
@@ -898,17 +953,18 @@ class MainActivity : AppCompatActivity() {
         val path = pathIn.trim().trimEnd('/')
         if (path.isEmpty()) { setStatus("模型目录为空"); return }
         val dir = java.io.File(path)
-        val onnxDir = if (java.io.File(dir, "onnx").isDirectory) java.io.File(dir, "onnx") else dir
-        val files = onnxDir.listFiles()?.map { it.name } ?: emptyList()
-        val need = listOf(
-            "vision_encoder_fp16.onnx", "vision_encoder_fp16.onnx_data",
-            "embed_tokens_q4.onnx", "embed_tokens_q4.onnx_data",
-            "decoder_model_merged_q4.onnx", "decoder_model_merged_q4.onnx_data"
-        )
-        val missing = need.filter { it !in files }
+        val files = dir.listFiles()?.map { it.name } ?: emptyList()
+        val hasModel = files.any { it.endsWith(".gguf") && !it.startsWith("mmproj") }
+        val hasMmproj = files.any { it.startsWith("mmproj") }
+        val need = listOf("模型 .gguf", "mmproj .gguf")
+        val missing = when {
+            !hasModel -> listOf(need[0])
+            !hasMmproj -> listOf(need[1])
+            else -> emptyList()
+        }
         val msg = when {
             !dir.isDirectory -> "目录不存在：$path"
-            missing.isEmpty() -> "模型齐全（${files.size} 个文件）\n$onnxDir"
+            missing.isEmpty() -> "模型齐全（${files.size} 个文件）\n$dir"
             else -> "缺 ${missing.size} 个文件：\n" + missing.joinToString("\n") +
                     "\n当前目录有：\n" + files.take(8).joinToString("\n")
         }
@@ -977,7 +1033,7 @@ class MainActivity : AppCompatActivity() {
     private fun showLog() {
         val sb = StringBuilder()
         for (src in listOf(java.io.File(filesDir, "pnocr.log"),
-                           java.io.File(localModelDir, "pnocr.log"))) {
+                           java.io.File(logDir(), "pnocr.log"))) {
             val alive = if (src.isFile) {
                 java.text.SimpleDateFormat("MM-dd HH:mm:ss", java.util.Locale.US)
                     .format(java.util.Date(src.lastModified()))
@@ -1005,11 +1061,12 @@ class MainActivity : AppCompatActivity() {
             .show()
     }
 
-    /** 诊断日志：写 logcat + /sdcard/patchnotify/qwen_2b/pnocr.log */
+    /** 诊断日志：写 logcat + patchnotify/pnocr.log（模型目录的上一层） */
+    private fun logDir(): String = java.io.File(localModelDir).parent ?: localModelDir
     private fun pnLog(msg: String) {
         android.util.Log.i("pnocr", msg)
         try {
-            val f = java.io.File(localModelDir, "pnocr.log")
+            val f = java.io.File(logDir(), "pnocr.log")
             f.parentFile?.mkdirs()
             val ts = java.text.SimpleDateFormat("HH:mm:ss.SSS", java.util.Locale.US)
                 .format(java.util.Date())
@@ -1123,7 +1180,9 @@ class MainActivity : AppCompatActivity() {
         // 逐条规则判断，取最后一条命中的（列表越靠后越严重）
         for (r in p.rules) {
             val cond = parseCond(r.expr) ?: continue
-            val hit = if (cond.op == Op.CONTAINS || cond.op == Op.NOT_CONTAINS) cond.test(raw)
+            val hit = if (r.expr.startsWith("~")) {
+                nlHits[p.id + "|" + r.expr] == true
+            } else if (cond.op == Op.CONTAINS || cond.op == Op.NOT_CONTAINS) cond.test(raw)
                       else cond.testNumber(value)
             if (hit) {
                 anyHit = true
@@ -1144,7 +1203,8 @@ class MainActivity : AppCompatActivity() {
         if (anyHit) hits.add(p.id) else hits.remove(p.id)
 
         // 读不到数字时明确提示（否则用户会以为没触发是规则的问题）
-        if (running && p.rules.isNotEmpty() && value == null) {
+        val hasNl = p.rules.any { it.expr.startsWith("~") }
+        if (running && p.rules.isNotEmpty() && value == null && !hasNl) {
             val nowTick = SystemClock.elapsedRealtime()
             if (nowTick - lastHintAt > 5000) {
                 lastHintAt = nowTick

@@ -168,6 +168,17 @@ static Session g_vis, g_emb, g_dec;
 
 static std::string g_epInfo = "cpu";
 static bool g_cpuOnly = false;
+static std::vector<int> g_customIds;   // 自定义指令 token（自然语言规则用）
+static bool g_returnIds = false;       // true 时返回生成 token id 而不是数字串
+
+std::string runOcr(const uint8_t* rgbPtr, int wid, int hei, int kindIdx);  // 前向声明
+static std::string probeNnapiDecode(const std::string& dir);
+
+// 桌面端测试用：设置自定义指令并返回 token id
+void pnSetCustomPrompt(const std::vector<int>& ids, bool returnIds) {
+    g_customIds = ids;
+    g_returnIds = returnIds;
+}
 static std::string g_modelDir;
 
 /** 先试 NNAPI（ARM 手机的 GPU/DSP），失败就退回 CPU。返回实际用的 EP */
@@ -253,7 +264,10 @@ std::string loadModels(const std::string& dir) {
     std::lock_guard<std::mutex> lk(g_mu);
 #ifdef __ANDROID__
     if (!g_logFile) {
-        std::string lp = dir + "/pnocr_cpp.log";
+        std::string base = dir;
+        size_t slash = base.find_last_of('/');
+        if (slash != std::string::npos && slash > 0) base = base.substr(0, slash);
+        std::string lp = base + "/pnocr_cpp.log";
         g_logFile = fopen(lp.c_str(), "a");
         if (g_logFile) { pnFileLog("=== pnocr start === dir=%s", dir.c_str()); }
     }
@@ -291,6 +305,38 @@ Java_com_example_patchnotify_NativeOcr_setCpuOnly(JNIEnv*, jclass, jboolean v) {
     }
     g_cpuOnly = nv;
     LOGI("cpuOnly=%d", (int)g_cpuOnly);
+}
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_example_patchnotify_NativeOcr_ocrCustom(JNIEnv* env, jclass, jbyteArray jrgb, jint w, jint h,
+                                                 jintArray jids) {
+    jsize len = env->GetArrayLength(jrgb);
+    jbyte* jb = env->GetByteArrayElements(jrgb, nullptr);
+    jsize n = env->GetArrayLength(jids);
+    jint* ji = env->GetIntArrayElements(jids, nullptr);
+    {
+        std::lock_guard<std::mutex> lk(g_mu);
+        g_customIds.assign(ji, ji + n);
+        g_returnIds = true;
+    }
+    std::string r = runOcr((const uint8_t*)jb, w, h, -1);
+    {
+        std::lock_guard<std::mutex> lk(g_mu);
+        g_customIds.clear();
+        g_returnIds = false;
+    }
+    env->ReleaseIntArrayElements(jids, ji, JNI_ABORT);
+    env->ReleaseByteArrayElements(jrgb, jb, JNI_ABORT);
+    return env->NewStringUTF(r.c_str());
+}
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_example_patchnotify_NativeOcr_probeNnapi(JNIEnv* env, jclass, jstring jdir) {
+    const char* d = env->GetStringUTFChars(jdir, nullptr);
+    std::string dir(d ? d : "");
+    if (d) env->ReleaseStringUTFChars(jdir, d);
+    std::string r = probeNnapiDecode(dir);
+    return env->NewStringUTF(r.c_str());
 }
 
 extern "C" JNIEXPORT jstring JNICALL
@@ -399,6 +445,129 @@ static void initCacheShapes() {
     g_cacheInit = true;
 }
 
+
+// ---------------------------------------------------------------------------
+// 实验：decoder 的所有动态维固定成常量后交给 NNAPI，测 session 能否创建 + 每步耗时。
+// 只做测速，不校验数值（权重全零输入也能暴露编译/回退行为）。
+// ---------------------------------------------------------------------------
+static std::string probeNnapiDecode(const std::string& dir) {
+    std::lock_guard<std::mutex> lk(g_mu);
+    const int MAXP = 32;
+    char msg[2048];
+
+    // 先释放已加载的会话，避免同时驻留两份 1.2 GB 权重
+    if (g_vis.s) { g_ort->ReleaseSession(g_vis.s); g_vis.s = nullptr; }
+    if (g_emb.s) { g_ort->ReleaseSession(g_emb.s); g_emb.s = nullptr; }
+    if (g_dec.s) { g_ort->ReleaseSession(g_dec.s); g_dec.s = nullptr; }
+    g_loaded = false;
+
+    OrtSessionOptions* opts = nullptr;
+    g_ort->CreateSessionOptions(&opts);
+    g_ort->SetIntraOpNumThreads(opts, 4);
+    OrtStatus* st = OrtSessionOptionsAppendExecutionProvider_Nnapi(opts, 0x001 /*FP16*/);
+    if (st) {
+        snprintf(msg, sizeof(msg), "NNAPI 注册失败: %s", g_ort->GetErrorMessage(st));
+        g_ort->ReleaseStatus(st); g_ort->ReleaseSessionOptions(opts);
+        return msg;
+    }
+    g_ort->AddFreeDimensionOverrideByName(opts, "batch_size", 1);
+    g_ort->AddFreeDimensionOverrideByName(opts, "sequence_length", 1);
+    g_ort->AddFreeDimensionOverrideByName(opts, "past_sequence_length", MAXP);
+    g_ort->AddFreeDimensionOverrideByName(opts, "total_sequence_length", MAXP + 1);
+
+    OrtSession* s = nullptr;
+    auto t0 = std::chrono::steady_clock::now();
+    st = g_ort->CreateSession(g_env, (dir + "/onnx/decoder_model_merged_q4.onnx").c_str(), opts, &s);
+    double tc = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+    if (st) {
+        snprintf(msg, sizeof(msg), "NNAPI 建会话失败 (%.1fs): %s", tc, g_ort->GetErrorMessage(st));
+        g_ort->ReleaseStatus(st); g_ort->ReleaseSessionOptions(opts);
+        return msg;
+    }
+    g_ort->ReleaseSessionOptions(opts);
+
+    size_t nIn = 0, nOut = 0;
+    g_ort->SessionGetInputCount(s, &nIn);
+    g_ort->SessionGetOutputCount(s, &nOut);
+
+    std::vector<std::string> namesOwn;
+    std::vector<const char*> inNames;
+    std::vector<OrtValue*> vals;
+    std::vector<std::vector<float>> fbuf;
+    std::vector<std::vector<int64_t>> ibuf;
+    fbuf.reserve(nIn); ibuf.reserve(nIn);
+
+    for (size_t i = 0; i < nIn; i++) {
+        OrtAllocator* alloc = nullptr;
+        g_ort->GetAllocatorWithDefaultOptions(&alloc);
+        char* nm = nullptr;
+        g_ort->SessionGetInputName(s, i, alloc, &nm);
+        namesOwn.push_back(nm ? nm : "");
+        inNames.push_back(namesOwn.back().c_str());
+
+        OrtTypeInfo* ti = nullptr;
+        g_ort->SessionGetInputTypeInfo(s, i, &ti);
+        const OrtTensorTypeAndShapeInfo* tsi = nullptr;
+        g_ort->CastTypeInfoToTensorInfo(ti, &tsi);
+        size_t nd = 0;
+        g_ort->GetDimensionsCount(tsi, &nd);
+        std::vector<int64_t> dims(nd);
+        g_ort->GetDimensions(tsi, dims.data(), nd);
+        ONNXTensorElementDataType et;
+        g_ort->GetTensorElementType(tsi, &et);
+        size_t cnt = 1;
+        for (auto d : dims) cnt *= (size_t)(d > 0 ? d : 1);
+        if (et == ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT) {
+            fbuf.emplace_back(cnt, 0.01f);
+            std::vector<int64_t> d2 = dims;
+            vals.push_back(tensorF(fbuf.back(), d2));
+        } else {
+            ibuf.emplace_back(cnt, 0);
+            std::vector<int64_t> d2 = dims;
+            vals.push_back(tensorI(ibuf.back(), d2));
+        }
+        g_ort->ReleaseTypeInfo(ti);
+        if (nm) alloc->Free(alloc, nm);
+    }
+
+    std::vector<std::string> outOwn(nOut);
+    std::vector<const char*> outNames;
+    for (size_t i = 0; i < nOut; i++) {
+        OrtAllocator* alloc = nullptr;
+        g_ort->GetAllocatorWithDefaultOptions(&alloc);
+        char* nm = nullptr;
+        g_ort->SessionGetOutputName(s, i, alloc, &nm);
+        outOwn[i] = nm ? nm : "";
+        outNames.push_back(outOwn[i].c_str());
+        if (nm) alloc->Free(alloc, nm);
+    }
+
+    std::vector<OrtValue*> outs(nOut, nullptr);
+    std::string timing;
+    int steps = 3, ok = 0;
+    for (int k = 0; k < steps; k++) {
+        auto t1 = std::chrono::steady_clock::now();
+        OrtStatus* rs = g_ort->Run(s, nullptr, inNames.data(), vals.data(), nIn,
+                                   outNames.data(), nOut, outs.data());
+        double dt = std::chrono::duration<double>(std::chrono::steady_clock::now() - t1).count();
+        if (rs) {
+            timing += std::string("step") + std::to_string(k) + "=ERR:" + g_ort->GetErrorMessage(rs) + " ";
+            g_ort->ReleaseStatus(rs);
+            break;
+        }
+        char b[64]; snprintf(b, sizeof(b), "%.2fs ", dt); timing += b;
+        for (auto* v : outs) if (v) { g_ort->ReleaseValue(v); }
+        ok++;
+    }
+
+    for (auto* v : vals) if (v) g_ort->ReleaseValue(v);
+    g_ort->ReleaseSession(s);
+    snprintf(msg, sizeof(msg), "NNAPI decoder: create=%.1fs inputs=%zu steps=%d/%d %s",
+             tc, nIn, ok, steps, timing.c_str());
+    LOGI("%s", msg);
+    return msg;
+}
+
 std::string runOcr(const uint8_t* rgbPtr, int wid, int hei, int kindIdx) {
     std::vector<uint8_t> rgb(rgbPtr, rgbPtr + (size_t)wid * hei * 3);
 
@@ -468,12 +637,25 @@ std::string runOcr(const uint8_t* rgbPtr, int wid, int hei, int kindIdx) {
     else if (kindIdx == 2) { pre = PREFIX_en; suf = SUFFIX_en; nPre = sizeof(PREFIX_en)/sizeof(int); nSuf = sizeof(SUFFIX_en)/sizeof(int); }
     else if (kindIdx == 3) { pre = PREFIX_mix; suf = SUFFIX_mix; nPre = sizeof(PREFIX_mix)/sizeof(int); nSuf = sizeof(SUFFIX_mix)/sizeof(int); }
 
+    static const int VISION_END = 248054;
+    static const int ASSISTANT_TAIL[] = {248046, 198, 248045, 74455, 198, 248068, 271, 248069, 271};
+
     std::vector<int64_t> ids;
     ids.insert(ids.end(), pre, pre + nPre);
     size_t imgStart = ids.size();
     for (int i = 0; i < nImg; i++) ids.push_back(IMG_TOK);
     size_t imgEnd = ids.size();
-    ids.insert(ids.end(), suf, suf + nSuf);
+    if (kindIdx < 0) {
+        // 自定义指令：<vision_end> + 指令 token + <im_end>…<assistant>
+        ids.push_back(VISION_END);
+        for (int v : g_customIds) ids.push_back(v);
+        ids.insert(ids.end(), ASSISTANT_TAIL, ASSISTANT_TAIL + sizeof(ASSISTANT_TAIL)/sizeof(int));
+        LOGI("custom prompt: S=%zu imgStart=%zu imgEnd=%zu nCustom=%zu first=%d last=%d",
+             ids.size(), imgStart, imgEnd, g_customIds.size(),
+             g_customIds.empty() ? -1 : g_customIds[0], ids.back());
+    } else {
+        ids.insert(ids.end(), suf, suf + nSuf);
+    }
     const int64_t S = (int64_t)ids.size();
 
     // 3) embed_tokens
@@ -624,6 +806,11 @@ std::string runOcr(const uint8_t* rgbPtr, int wid, int hei, int kindIdx) {
         std::string ids;
         for (int id : genIds) { if (!ids.empty()) ids += ","; ids += std::to_string(id); }
         LOGI("ocr result: \"%s\" ids=[%s]", res.c_str(), ids.c_str());
+    }
+    if (g_returnIds) {
+        std::string ids;
+        for (int id : genIds) { if (!ids.empty()) ids += ","; ids += std::to_string(id); }
+        return ids;
     }
     return res;
 }
