@@ -29,7 +29,7 @@ TOOLCHAIN="$ANDROID_NDK/toolchains/llvm/prebuilt/darwin-x86_64"
 [ -d "$TOOLCHAIN" ] || TOOLCHAIN="$ANDROID_NDK/toolchains/llvm/prebuilt/linux-x86_64"
 
 echo "==> configure ($BUILD_DIR)"
-cmake -B "$BUILD_DIR" -G Ninja \
+cmake -S "$LLAMA_DIR" -B "$BUILD_DIR" -G Ninja \
   -DCMAKE_TOOLCHAIN_FILE="$ANDROID_NDK/build/cmake/android.toolchain.cmake" \
   -DANDROID_ABI=$ABI -DANDROID_PLATFORM=android-$API \
   -DCMAKE_BUILD_TYPE=Release \
