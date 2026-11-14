@@ -9,10 +9,11 @@ Android 端实时 OCR 监控与阈值提醒。摄像头画面里框选一块区�
 - CameraX 预览 + 4 fps 抽帧，按区域轮询识别
 - 识别方式：本地 Qwen（默认）/ 自动（先数码管）/ 只读数码管 / 只认印刷文字
 - 识别内容：数字 / 中文 / 英文 / 混合
-- 多条规则独立触发：每越过一个阈值提醒一次
-- 首次读数只建立基线，开机时已经超标的阈值不会立刻报警
-- 播报内容可省略，只播提示音；播报时长可设
-- 阈值、播报、秒数的文本格式：`字段>191 好了 5`（兼容旧写法 `字段>191=>好了=>5`）
+- 规则就是一句话：`数码管读数是否已接近 001680`
+- 句号后面那段是命中时播报的话：`数码管读数是否已接近 001680。快充好了`
+  没有句号就只响提示音
+- 判断交给 VLM，只输出「是 / 否」；按「否 → 是」的跃变触发一次，条件恢复后才重新武装
+- 每个区域可单独开启「允许模型思考」：开放式判断更准，代价是每次多 ~10 秒
 - 帧间指纹缓存：画面几乎没变时直接复用上次读数，不起推理
 
 ## 目录
@@ -21,8 +22,7 @@ Android 端实时 OCR 监控与阈值提醒。摄像头画面里框选一块区�
 app/src/main/java/com/example/patchnotify/
   MainActivity.kt        相机、识别循环、规则触发、TTS
   NativeLlama.kt         JNI 入口 + 模型文件自动发现
-  ConditionParser.kt     条件 DSL 与规则文本解析
-  SegmentReader.kt       七段数码管解码
+  AskRule.kt             一句话规则：拆分条件/播报、拼提示词、解析是/否
   Config.kt              Patch / Rule 数据模型与持久化
 app/src/main/cpp/
   pn_llama.cpp           llama.cpp/mtmd 的 JNI 薄封装（图像 → 多模态 prompt → 贪心解码）
@@ -148,6 +148,11 @@ CPU 版本还带来两个副作用：不占 GPU，相机预览不卡；没有 Vu
 
 - 输入尺寸不写死：按框选区域实际大小交给 mtmd 处理，`image_max_tokens` 上限 128
   （与旧 ONNX 版 smart_resize 产出的 token 数对齐；压到 64 会把首位 0 读成 9）
-- 关掉了 Qwen3.5 的 thinking：在 assistant 开头预填空 think 块，输出从数百 token 降到 6 个
+- 默认关掉 Qwen3.5 的 thinking：在 assistant 开头预填空 think 块，输出从数百 token 降到几个；
+  每个区域可以单独打开（`Patch.think`），此时预算给 400 token，生成后按 `</think>` 截断
+- 为什么不让模型做数值判断：实测 2B 对「读数是否超过 5000」这类封闭问句有明显 yes-bias
+  （001679 也答"是"），所以数值类判断直接用 thinking + 让模型自己推理，或把条件写成它能答对的封闭问句
+- 每个区域的识别记录写在 `<模型目录父目录>/logs/patch_<字段>_<区域哈希>.log`，
+  文件头含设备信息与区域参数，之后每行是时间和「是/否」
 - 日志写在模型目录的父目录：`pnocr.log`（Kotlin 侧）和 `pnocr_cpp.log`（C++ 侧）
-- 阈值、秒数等参数保存在 SharedPreferences / 应用私有 JSON
+- 区域参数保存在 SharedPreferences / 应用私有 JSON

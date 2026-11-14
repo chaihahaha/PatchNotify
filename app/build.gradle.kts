@@ -59,7 +59,6 @@ dependencies {
     implementation("androidx.camera:camera-view:$camerax")
 
     // Bundled (offline) Chinese + Latin text recognition model.
-    implementation("com.google.mlkit:text-recognition-chinese:16.0.1")
 
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
 

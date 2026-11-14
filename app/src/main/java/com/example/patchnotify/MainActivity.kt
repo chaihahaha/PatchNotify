@@ -33,8 +33,6 @@ import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
 import com.example.patchnotify.databinding.ActivityMainBinding
-import com.google.mlkit.vision.common.InputImage
-import com.google.mlkit.vision.text.TextRecognition
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
@@ -50,33 +48,9 @@ class MainActivity : AppCompatActivity() {
     private val reads = mutableMapOf<String, PatchRead>()
     private val hits = mutableSetOf<String>()
 
-    /** 已经报过的规则：规则键 -> 解除武装的时刻（0 表示立即可以再报） */
-    private val fired = mutableMapOf<String, Long>()
-    /** 已经做过「首次读数」的 patch：启动时已满足的阈值静默跳过 */
-    private val seeded = mutableSetOf<String>()
-
     private val cameraExecutor = Executors.newSingleThreadExecutor()
     private var analysis: ImageAnalysis? = null
     private var cameraProvider: ProcessCameraProvider? = null
-
-    private val recognizer = TextRecognition.getClient(
-        com.google.mlkit.vision.text.chinese.ChineseTextRecognizerOptions.Builder().build()
-    )
-    private var lastFrameAt = 0L
-    private var rrIndex = 0
-    private val nlState = HashMap<String, Boolean>()     // patch -> 上次是否命中
-    private val nlRearmAt = HashMap<String, Long>()      // patch -> 允许再次触发的时间
-    private var busy = false
-    private var busyAt = 0L
-    private var lastBusyLogAt = 0L
-    private var lastCropDumpAt = 0L
-    private var lastFrameSize = ""
-    // 帧间缓存必须按 patch 分开存：多个 patch 共用一份会把 A 的读数当成 B 的
-    private val sigByPatch = HashMap<String, IntArray>()
-    private val resultByPatch = HashMap<String, String>()
-    private val resultAtByPatch = HashMap<String, Long>()
-    /** 自然语言规则("\~描述")的判定结果，键 = patchId|expr */
-    private val nlHits = mutableMapOf<String, Boolean>()
 
     private var tts: TextToSpeech? = null
     private var ttsReady = false
@@ -89,29 +63,30 @@ class MainActivity : AppCompatActivity() {
     private var running = false
     private var lastUiAt = 0L
     private var lastHintAt = 0L
-    private val segBuf = mutableMapOf<String, java.util.ArrayDeque<String>>()
 
     private var lastServerAt = 0L
     private var cameraControl: androidx.camera.core.CameraControl? = null
     private val afHandler = android.os.Handler(android.os.Looper.getMainLooper())
     private var frameSeq = 0
     private var lastNullLogAt = 0L
+    private var lastFrameAt = 0L
+    private var rrIndex = 0
+    private val nlState = HashMap<String, Boolean>()     // patch -> 上次是否命中
+    private val nlRearmAt = HashMap<String, Long>()      // patch -> 允许再次触发的时间
+    private var busy = false
+    private var busyAt = 0L
+    private var lastBusyLogAt = 0L
+    private var lastCropDumpAt = 0L
+    private var lastFrameSize = ""
+    // 帧间缓存按 patch 分开存：多个 patch 共用一份会把 A 的读数当成 B 的
+    private val sigByPatch = HashMap<String, IntArray>()
+    private val resultByPatch = HashMap<String, String>()
+    private val resultAtByPatch = HashMap<String, Long>()
     private var localBusy = false
     private var localReady = false
     private var localModelDir = java.io.File(
         android.os.Environment.getExternalStorageDirectory(), "patchnotify/qwen_2b"
     ).absolutePath
-
-    /** 最近 3 帧里至少 2 帧一致才返回，否则 null */
-    private fun stableSegReading(p: Patch, raw: String): String? {
-        if (raw.isEmpty()) { segBuf.remove(p.id); return null }
-        val buf = segBuf.getOrPut(p.id) { java.util.ArrayDeque() }
-        buf.addLast(raw)
-        while (buf.size > 3) buf.removeFirst()
-        if (buf.size < 2) return null
-        val best = buf.groupingBy { it }.eachCount().entries.maxByOrNull { it.value } ?: return null
-        return if (best.value >= 2) best.key else null
-    }
 
     /** 选一张照片，跑一遍同样的预处理 + OCR，用来判断相机读不出来到底是哪一环的问题 */
     private val pickImage = registerForActivityResult(
@@ -120,7 +95,7 @@ class MainActivity : AppCompatActivity() {
 
     companion object {
         /** 每次发版改这里，屏幕上会显示，便于确认装的是哪个包 */
-        const val BUILD_TAG = "v65-think"
+        const val BUILD_TAG = "v66-simple"
         private const val REQ_PERMS = 1001
         private const val FRAME_INTERVAL_MS = 250L      // 4 fps
         private const val OCR_BUDGET_MS = 200L
@@ -295,14 +270,6 @@ class MainActivity : AppCompatActivity() {
             .setPositiveButton("确定") { _, _ ->
                 val f = input.text.toString().trim().ifBlank { "x" }
                 val np = Patch(name = f, field = f, x = x, y = y, w = w, h = h)
-                // 默认规则：每 211 一件，各自只响一次
-                if (np.rules.isEmpty()) {
-                    var k = 191
-                    while (k <= 2090) {
-                        np.rules.add(Rule("$f>$k", "", 10))
-                        k += 211
-                    }
-                }
                 patches.add(np)
                 ConfigStore.save(this, patches)
                 refreshPatchList()
@@ -420,7 +387,6 @@ class MainActivity : AppCompatActivity() {
                 getSharedPreferences("patchnotify", MODE_PRIVATE).edit()
                     .putString("modelDir", localModelDir).apply()
                 p.monitor = true
-                fired.clear()
                 ConfigStore.save(this, patches)
                 refreshPatchList()
                 dialog.dismiss()
@@ -438,7 +404,6 @@ class MainActivity : AppCompatActivity() {
         dialog.show()
     }
 
-    private fun parseCond(expr: String): Condition? = ConditionParser.parseWhole(expr)
 
     // ---------------------------------------------------------------- camera
 
@@ -588,7 +553,7 @@ class MainActivity : AppCompatActivity() {
                 // 裁出来太小基本等于画面外，直接判失败，别把垃圾发给模型
                 val cw = crop.width; val ch = crop.height
                 crop.recycle()
-                onRead(p, "框太小:${cw}x${ch}")
+                setStatus("${p.field} 框太小:${cw}x${ch}，请重画")
                 next(); return
             }
 
@@ -600,7 +565,7 @@ class MainActivity : AppCompatActivity() {
                     pnLog("local: 没有文件访问权限 api=$api isExternalStorageManager=$mgr")
                     crop.recycle()
                     runOnUiThread {
-                        onRead(p, "没有文件访问权限(API$api 管理所有文件=$mgr)")
+                        setStatus("没有文件访问权限(API$api 管理所有文件=$mgr)")
                         askAllFilesAccess()
                     }
                     bitmap.recycle()
@@ -616,11 +581,13 @@ class MainActivity : AppCompatActivity() {
                 }
                 localBusy = true
                 val bmp = crop
-                val kind = when (p.kind) { "cn" -> 1; "en" -> 2; "mix" -> 3; else -> 0 }
-                val askMode = p.ask.isNotBlank()
+                if (p.ask.isBlank()) {
+                    pnLog("local: 该 patch 还没写判断条件，跳过")
+                    crop.recycle(); localBusy = false; busy = false; return
+                }
                 val fs = "${bmp.width}x${bmp.height}"
                 if (fs != lastFrameSize) { lastFrameSize = fs; pnLog("local: 整帧=${bitmap.width}x${bitmap.height} crop=$fs") }
-                pnLog("local: 进入 patch=${p.field} crop=$fs kind=$kind")
+                pnLog("local: 进入 patch=${p.field} crop=$fs think=${p.think}")
                 val found = resolveModelDir()
                 if (found != localModelDir) { pnLog("local: 换用 $found"); localModelDir = found }
                 Thread {
@@ -658,23 +625,6 @@ class MainActivity : AppCompatActivity() {
                                 rgb[i * 3 + 1] = ((c shr 8) and 0xFF).toByte()
                                 rgb[i * 3 + 2] = (c and 0xFF).toByte()
                             }
-                            // 自然语言规则：逐条让模型判断「是/否」
-                            val nl = p.rules.filter { it.expr.startsWith("~") }
-                            if (nl.isNotEmpty()) {
-                                var anyYes = false
-                                for (rule in nl) {
-                                    val desc = rule.expr.substring(1)
-                                    val out = NativeOcr.ocrPrompt(rgb, bw, bh, desc)
-                                    val yes = out.trimStart().startsWith("是")
-                                    nlHits[p.id + "|" + rule.expr] = yes
-                                    if (yes) anyYes = true
-                                    pnLog("NL 「$desc」 → $out → ${if (yes) "是" else "否"}")
-                                }
-                                r = if (anyYes) "是" else "否"
-                                bmp.recycle(); localBusy = false
-                                runOnUiThread { onRead(p, r) }
-                                return@Thread
-                            }
                             // 画面几乎没变就直接复用上次结果，避免每帧都白跑一次推理
                             val sig = try {
                                 val sw = 48; val sh = 20
@@ -701,18 +651,7 @@ class MainActivity : AppCompatActivity() {
                                 pnLog("local: 画面未变化，复用「$r」")
                             } else {
                                 val t0 = SystemClock.elapsedRealtime()
-                                val nc = if (askMode) numericCond(p.ask) else null
-                                r = when {
-                                    !askMode -> NativeOcr.ocr(rgb, bw, bh, kind)
-                                    nc != null -> {
-                                        // 数值条件：先读数字（这条链路准），再在本地比较
-                                        val digits = NativeOcr.ocr(rgb, bw, bh, 0)
-                                        val x = numberFrom(digits)
-                                        if (x == null) "ERR:读不到数字「${digits.take(8)}」"
-                                        else (if (test(nc, x)) "是" else "否") + "|$digits"
-                                    }
-                                    else -> NativeOcr.ocrPrompt(rgb, bw, bh, p.ask, p.think)
-                                }
+                                r = NativeOcr.ocrPrompt(rgb, bw, bh, p.ask, p.think)
                                 if (r.startsWith("ERR:TOOBIG:")) {
                                     val a = r.split(":")
                                     r = "框太大：${a.getOrNull(2)} 个图像token（上限 ${a.getOrNull(3)}），请把框划小一点"
@@ -731,55 +670,15 @@ class MainActivity : AppCompatActivity() {
                     }
                     bmp.recycle()
                     localBusy = false
-                    runOnUiThread {
-                        if (askMode) onVerdict(p, r) else onRead(p, r)
-                    }
+                    runOnUiThread { onVerdict(p, r) }
                 }.start()
                 bitmap.recycle()
                 busy = false              // ★ 推理在后台线程跑，这里不能占着 busy
                 return
             }
 
-            // 先试数码管（计数器/LED 面板）：只有"数字"类型才用
-            if (p.mode != "text" && p.kind == "num") {
-                val seg = try {
-                    val px = IntArray(crop.width * crop.height)
-                    crop.getPixels(px, 0, crop.width, 0, 0, crop.width, crop.height)
-                    SegmentReader.decode(px, crop.width, crop.height)
-                } catch (e: Exception) {
-                    null
-                }
-                if (seg != null && seg.digits.none { it == '?' }) {
-                    runOnUiThread { onRead(p, seg.digits, fromSeg = true) }
-                    crop.recycle()
-                    next()
-                    return
-                }
-            }
-
-            if (p.mode == "seg7") {
-                // 只读数码管模式：读不出来就明确报空，不交给 ML Kit 瞎猜
-                runOnUiThread { onRead(p, "") }
-                crop.recycle()
-                next()
-                return
-            }
-
-            val ocrInput = prepareForOcr(crop)
-            crop.recycle()
-
-            recognizer.process(InputImage.fromBitmap(ocrInput, 0))
-                .addOnSuccessListener { text ->
-                    val raw = text.text.replace(Regex("\\s+"), " ").trim()
-                    runOnUiThread { onRead(p, raw) }
-                }
-                .addOnFailureListener { onRead(p, "") }
-                .addOnCompleteListener {
-                    ocrInput.recycle()
-                    next()
-                }
-        }
         next()
+    }
     }
 
     /** 裁剪 + 摆正 + 数码管增强 */
@@ -801,53 +700,6 @@ class MainActivity : AppCompatActivity() {
         return bmp
     }
 
-    /**
-     * 小区域放大 + 深色背景（红色 LED 数码管）反相二值化。
-     * ML Kit 对 7 段数码管识别率很低，预处理能显著提高命中率。
-     */
-    private fun prepareForOcr(src: Bitmap): Bitmap {
-        var bmp = src
-
-        // 1) 太小就放大（目标高度 >= 160px）
-        if (bmp.height < 160) {
-            val scale = (160f / bmp.height).toInt().coerceIn(2, 6)
-            val big = Bitmap.createScaledBitmap(bmp, bmp.width * scale, bmp.height * scale, true)
-            bmp.recycle()
-            bmp = big
-        }
-
-        // 2) 采样判断是不是"深底亮字"（数码管）
-        val w = bmp.width
-        val h = bmp.height
-        var sum = 0L
-        var cnt = 0
-        var i = 0
-        val pixels = IntArray(w * h)
-        bmp.getPixels(pixels, 0, w, 0, 0, w, h)
-        while (i < pixels.size) {
-            val c = pixels[i]
-            val v = maxOf((c shr 16) and 0xFF, (c shr 8) and 0xFF, c and 0xFF)
-            sum += v
-            cnt++
-            i += 8
-        }
-        val mean = if (cnt == 0) 255 else (sum / cnt).toInt()
-
-        if (mean >= 90) return bmp     // 普通亮底黑字，保持原样
-
-        // 3) 深底 → 取最亮通道做阈值，反相成"白底黑字"
-        for (k in pixels.indices) {
-            val c = pixels[k]
-            val v = maxOf((c shr 16) and 0xFF, (c shr 8) and 0xFF, c and 0xFF)
-            pixels[k] = if (v > 120) Color.BLACK else Color.WHITE
-        }
-        val out = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
-        out.setPixels(pixels, 0, w, 0, 0, w, h)
-        bmp.recycle()
-        return out
-    }
-
-    /** 用一张照片跑同样的预处理 + OCR，把识别文本原样显示出来 */
     private fun testWithImage(uri: android.net.Uri) {
         setStatus("正在识别这张照片……")
         lifecycleScope.launch {
@@ -858,45 +710,40 @@ class MainActivity : AppCompatActivity() {
                         android.graphics.BitmapFactory.decodeStream(it)
                     }
                     val maxSide = 1600f
-                    val s = maxSide / maxOf(bmp0.width, bmp0.height)
-                    val img = if (s < 1f)
-                        Bitmap.createScaledBitmap(bmp0, (bmp0.width * s).toInt(), (bmp0.height * s).toInt(), true)
+                    val sc = maxSide / maxOf(bmp0.width, bmp0.height)
+                    val img = if (sc < 1f)
+                        Bitmap.createScaledBitmap(bmp0, (bmp0.width * sc).toInt(), (bmp0.height * sc).toInt(), true)
                     else bmp0
-                    // 同一张图分别跑：数码管读数 + ML Kit 文本
-                    val px = IntArray(img.width * img.height)
-                    img.getPixels(px, 0, img.width, 0, 0, img.width, img.height)
-                    val seg = SegmentReader.decode(px, img.width, img.height)
-                    val prepared = prepareForOcr(img)
-                    val text = com.google.android.gms.tasks.Tasks.await(
-                        recognizer.process(InputImage.fromBitmap(prepared, 0))
-                    )
-                    prepared.recycle()
-                    (seg?.digits ?: "") + "\u0001" + text.text.replace(Regex("\\s+"), " ").trim()
+                    if (!localReady) {
+                        val st = NativeOcr.probe(resolveModelDir().also { localModelDir = it })
+                        localReady = st == "ok" || st.startsWith("ok ")
+                        if (!localReady) return@withContext "ERR:$st"
+                    }
+                    val w = img.width; val h = img.height
+                    val px = IntArray(w * h)
+                    img.getPixels(px, 0, w, 0, 0, w, h)
+                    val rgb = ByteArray(w * h * 3)
+                    for (i in px.indices) {
+                        val c = px[i]
+                        rgb[i * 3] = ((c shr 16) and 0xFF).toByte()
+                        rgb[i * 3 + 1] = ((c shr 8) and 0xFF).toByte()
+                        rgb[i * 3 + 2] = (c and 0xFF).toByte()
+                    }
+                    "OK:" + w + "x" + h + "\u0001" + NativeOcr.ocrPrompt(rgb, w, h, "读出图中数字", false)
                 } catch (e: Exception) {
                     "ERR:" + e.message
                 }
             }
             if (result.startsWith("ERR:")) { setStatus(result); return@launch }
-            val parts = result.split("\u0001")
-            val segDigits = parts.getOrNull(0) ?: ""
-            val ocrText = parts.getOrNull(1) ?: ""
-            val nums = Condition.numbersIn(if (segDigits.isNotEmpty()) segDigits else ocrText)
-            val msg = "数码管读数：" + (if (segDigits.isEmpty()) "没读到" else segDigits) +
-                    "\n调试：" + SegmentReader.lastDebug +
-                    "\n\nML Kit 文本：\n" + (if (ocrText.isEmpty()) "（啥也没识别到）" else ocrText) +
-                    "\n\n找到的数字：" + (if (nums.isEmpty()) "无" else nums.joinToString(", ")) +
-                    "\n取最大：" + (nums.maxOrNull()?.toString() ?: "无")
+            val parts = result.removePrefix("OK:").split("\u0001")
             setStatus("照片识别完成")
             AlertDialog.Builder(this@MainActivity)
                 .setTitle("照片识别结果")
-                .setMessage(msg)
+                .setMessage("尺寸：" + parts.getOrNull(0) + "\n\n模型回答：\n" + (parts.getOrNull(1) ?: ""))
                 .setPositiveButton("知道了", null)
                 .show()
         }
     }
-
-
-    /** 系统文件夹选择器 → 转成真实路径（不依赖 /sdcard 这个别名） */
 
     private fun importModelDir(target: android.widget.EditText) {
         dirEdit = target
@@ -1161,92 +1008,6 @@ class MainActivity : AppCompatActivity() {
             .show()
     }
 
-    private fun onRead(p: Patch, rawIn: String, fromSeg: Boolean = false) {
-        // 数码管读数做稳定性过滤：最近 3 帧里至少 2 帧一致才采信，
-        // 避免失焦/抖动时读出错误数字并触发误报。
-        val raw: String
-        val value: Double?
-        if (fromSeg) {
-            val stable = stableSegReading(p, rawIn)
-            raw = stable ?: rawIn
-            value = stable?.let { Condition.pickNumber(it, p.pick) }
-        } else {
-            segBuf.remove(p.id)
-            raw = rawIn
-            value = Condition.pickNumber(raw, p.pick)
-        }
-        reads[p.id] = PatchRead(p.id, raw, value, SystemClock.elapsedRealtime())
-        val now = SystemClock.elapsedRealtime()
-
-        // 每个 patch 独立日志：内容变化即记，静止时每 60s 一条心跳
-        try {
-            if (PatchLog.shouldLog(p.id, raw)) {
-                PatchLog.log(p, raw, if (value != null) "value=$value" else "")
-            }
-        } catch (e: Exception) { pnLog("patchlog 写失败: ${e.message}") }
-
-        var chosen: Rule? = null
-        var anyHit = false
-
-        // 每个 patch 的第一次有效读数只用来「设定基线」：
-        // 启动时数字已经很大（比如 500，本来就 >191），不应该立刻响，只有之后递进越过阈值才响。
-        val firstEval = seeded.add(p.id)
-
-        // 逐条规则判断，取最后一条命中的（列表越靠后越严重）
-        for (r in p.rules) {
-            val cond = parseCond(r.expr) ?: continue
-            val hit = if (r.expr.startsWith("~")) {
-                nlHits[p.id + "|" + r.expr] == true
-            } else if (cond.op == Op.CONTAINS || cond.op == Op.NOT_CONTAINS) cond.test(raw)
-                      else cond.testNumber(value)
-            if (hit) {
-                anyHit = true
-                if (firstEval) {
-                    fired[key(p, r)] = Long.MAX_VALUE
-                    pnLog("首读基线 $raw：${r.expr} 已满足，静默")
-                } else {
-                    chosen = r
-                }
-            } else {
-                // 条件恢复 → 重新武装（延迟 8 秒，避免在阈值附近抖动时反复报）
-                val k = key(p, r)
-                val t = fired[k]
-                if (t != null && t == Long.MAX_VALUE) fired[k] = now + REARM_MS
-            }
-        }
-
-        if (anyHit) hits.add(p.id) else hits.remove(p.id)
-
-        // 读不到数字时明确提示（否则用户会以为没触发是规则的问题）
-        val hasNl = p.rules.any { it.expr.startsWith("~") }
-        if (running && p.rules.isNotEmpty() && value == null && !hasNl) {
-            val nowTick = SystemClock.elapsedRealtime()
-            if (nowTick - lastHintAt > 5000) {
-                lastHintAt = nowTick
-                setStatus("⚠ ${p.field} 读不到数字（识别到：「${raw.take(12)}」）。" +
-                        "请把框缩到数字上、靠近一点、避开反光。")
-            }
-        }
-
-        if (SystemClock.elapsedRealtime() - lastUiAt > 400) {
-            lastUiAt = SystemClock.elapsedRealtime()
-            android.util.Log.d("PatchNotify", ResultJson.build(patches, reads, hits).toString())
-            refreshPatchList()
-        }
-
-        if (chosen != null && running && !alerting) {
-            val k = key(p, chosen)
-            val t = fired[k]
-            val canFire = (t == null) || (t != Long.MAX_VALUE && now >= t)
-            if (canFire) {
-                fired[k] = Long.MAX_VALUE      // 已报，等条件恢复后才重新武装
-                triggerAlert(p, chosen)
-            }
-        }
-    }
-
-    private fun key(p: Patch, r: Rule) = p.id + "|" + r.expr
-
     /**
      * 自然语言规则的判定结果。
      * 只在「否 → 是」的跃变时响一次；条件恢复后才重新武装，避免条件持续满足时一直响。
@@ -1403,8 +1164,6 @@ class MainActivity : AppCompatActivity() {
         running = !running
         binding.btnStartStop.text = if (running) getString(R.string.btn_stop) else getString(R.string.btn_start)
         if (running) {
-            fired.clear()
-            seeded.clear()
             setStatus("监控中……（每秒 4 帧 OCR，按 patch 轮询）")
         } else {
             alerting = false
@@ -1426,6 +1185,5 @@ class MainActivity : AppCompatActivity() {
         analysis?.clearAnalyzer()
         cameraProvider?.unbindAll()
         cameraExecutor.shutdown()
-        recognizer.close()
     }
 }
