@@ -99,7 +99,7 @@ class MainActivity : AppCompatActivity() {
 
     companion object {
         /** 每次发版改这里，屏幕上会显示，便于确认装的是哪个包 */
-        const val BUILD_TAG = "v89-qa"
+        const val BUILD_TAG = "v90-once"
         private const val REQ_PERMS = 1001
         private const val FRAME_INTERVAL_MS = 250L      // 4 fps
         private const val ROUND_BUDGET_MS = 200L
@@ -359,6 +359,11 @@ class MainActivity : AppCompatActivity() {
                 getSharedPreferences("patchnotify", MODE_PRIVATE).edit()
                     .putString("modelDir", localModelDir).apply()
                 p.monitor = true
+                nlState.remove(p.id)
+                nlRearmAt.remove(p.id)
+                sigByPatch.remove(p.id)
+                resultByPatch.remove(p.id)
+                resultAtByPatch.remove(p.id)
                 ConfigStore.save(this, patches)
                 refreshPatchList()
                 dialog.dismiss()
@@ -672,7 +677,9 @@ class MainActivity : AppCompatActivity() {
                                 resultAtByPatch[p.id] = SystemClock.elapsedRealtime()
                                 val dt = (SystemClock.elapsedRealtime() - t0) / 1000.0
                                 pnLog("local: 判定 → 「$r」 用时 %.1fs".format(dt))
-                                runOnUiThread { setStatus("${String.format("%.1f", dt)}s → ${r.take(20)}") }
+                                runOnUiThread {
+                                    if (running) setStatus("${String.format("%.1f", dt)}s → ${r.take(20)}")
+                                }
                             }
 
                             // 截图存档：平时 60 秒一张，条件成立的那一帧强制补一张
@@ -1145,17 +1152,20 @@ class MainActivity : AppCompatActivity() {
         alertJob?.cancel()
         alertJob = lifecycleScope.launch {
             val end = SystemClock.elapsedRealtime() + secs * 1000L
-            while (isActive && alerting) {
-                if (beepOnly) {
+            if (!beepOnly) {
+                speak(text)                     // 答案只说一遍，重复三遍是以前的循环遗留
+                while (isActive && alerting && SystemClock.elapsedRealtime() < end) {
+                    delay(200)
+                }
+            } else {
+                while (isActive && alerting) {
                     beepOnce(160)
                     delay(200)
                     beepOnce(160)
-                } else {
-                    speak(text)
+                    val left = end - SystemClock.elapsedRealtime()
+                    if (left <= 0) break
+                    delay(minOf(1000L, left))
                 }
-                val left = end - SystemClock.elapsedRealtime()
-                if (left <= 0) break
-                delay(minOf(if (beepOnly) 1000L else 3000L, left))
             }
             if (isActive && alerting) {
                 // 到时自动结束，直接回到监控
@@ -1224,6 +1234,7 @@ class MainActivity : AppCompatActivity() {
         pnLog("监控 ${if (running) "开始" else "停止"} patches=${patches.size} " +
               "targets=${patches.count { it.monitor }}")
         binding.btnStartStop.text = if (running) getString(R.string.btn_stop) else getString(R.string.btn_start)
+        resetDetection()
         if (running) {
             setStatus("监控中 · 每 0.25 秒取一帧，逐个区域判断")
         } else {
@@ -1236,6 +1247,16 @@ class MainActivity : AppCompatActivity() {
             afHandler.removeCallbacksAndMessages(null)
             setStatus("已停止监控")
         }
+    }
+
+    /** 清掉按 patch 缓存的判定/指纹，保证下一次判定重新从「未命中」开始 */
+    private fun resetDetection() {
+        nlState.clear()
+        nlRearmAt.clear()
+        lastShown.clear()
+        sigByPatch.clear()
+        resultByPatch.clear()
+        resultAtByPatch.clear()
     }
 
     override fun onDestroy() {
