@@ -141,3 +141,9 @@ object ResultJson {
         return o
     }
 }
+
+/** 界面上显示的名字：用户那句判断条件的前 10 个字（没写条件时退回旧字段名） */
+fun Patch.title(): String {
+    val t = AskRule.conditionOf(ask).take(10)
+    return t.ifBlank { field.ifBlank { name.ifBlank { "区域" } } }
+}

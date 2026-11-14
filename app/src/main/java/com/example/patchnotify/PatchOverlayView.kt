@@ -80,7 +80,7 @@ class PatchOverlayView @JvmOverloads constructor(
 
             val value = reads[p.id]?.raw?.replace("\n", " ")?.take(24) ?: ""
             val label = buildString {
-                append(p.field.ifBlank { p.name.ifBlank { "?" } })
+                append(p.title())
                 if (!p.monitor) append(" (停)")
                 if (value.isNotEmpty()) append(": ").append(value)
             }

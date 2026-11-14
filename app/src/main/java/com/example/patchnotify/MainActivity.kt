@@ -73,6 +73,7 @@ class MainActivity : AppCompatActivity() {
     private var lastFrameLogAt = 0L
     private var lastTickLogAt = 0L
     private var rrIndex = 0
+    private val lastShown = HashMap<String, String>()    // patch -> 上次显示的结果
     private val nlState = HashMap<String, Boolean>()     // patch -> 上次是否命中
     private val nlRearmAt = HashMap<String, Long>()      // patch -> 允许再次触发的时间
     private var busy = false
@@ -98,7 +99,7 @@ class MainActivity : AppCompatActivity() {
 
     companion object {
         /** 每次发版改这里，屏幕上会显示，便于确认装的是哪个包 */
-        const val BUILD_TAG = "v73-next-fix"
+        const val BUILD_TAG = "v74-speak"
         private const val REQ_PERMS = 1001
         private const val FRAME_INTERVAL_MS = 250L      // 4 fps
         private const val OCR_BUDGET_MS = 200L
@@ -229,12 +230,9 @@ class MainActivity : AppCompatActivity() {
                     }
                 }
                 val r = reads[p.id]
-                val shownRaw = r?.raw?.replace("\n", " ")?.take(18)
-                val shownVal = r?.value?.let { if (it == it.toLong().toDouble()) it.toLong().toString() else it.toString() }
+                val shownRaw = r?.raw?.replace("\n", " ")?.take(18) ?: "—"
                 val name = TextView(this).apply {
-                    text = "${p.field.ifBlank { p.name.ifBlank { "?" } }}  识别:[" +
-                        (shownRaw ?: "-") + "] 取值:" + (shownVal ?: "无") +
-                        "  规则${p.rules.size}"
+                    text = "${p.title()}  [$shownRaw]"
                     textSize = 12f
                     setTextColor(if (hits.contains(p.id)) 0xFFFF5252.toInt() else 0xFFDDDDDD.toInt())
                     setOnClickListener { editRulesDialog(p) }
@@ -266,22 +264,12 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun askFieldName(x: Float, y: Float, w: Float, h: Float) {
-        val input = EditText(this).apply { hint = "字段名，例如 x"; setText("") }
-        AlertDialog.Builder(this)
-            .setTitle("新监控区域")
-            .setMessage("起个字段名（作为 JSON 的域）")
-            .setView(input)
-            .setPositiveButton("确定") { _, _ ->
-                val f = input.text.toString().trim().ifBlank { "x" }
-                val np = Patch(name = f, field = f, x = x, y = y, w = w, h = h)
-                patches.add(np)
-                ConfigStore.save(this, patches)
-                refreshPatchList()
-                setStatus("已添加区域：$f")
-                editRulesDialog(patches.last())
-            }
-            .setNegativeButton("取消", null)
-            .show()
+        // 不再让用户起字段名：显示名直接用判断条件的前 10 个字
+        val np = Patch(name = "", field = "", x = x, y = y, w = w, h = h, monitor = true)
+        patches.add(np)
+        ConfigStore.save(this, patches)
+        refreshPatchList()
+        editRulesDialog(np)
     }
 
 
@@ -306,11 +294,11 @@ class MainActivity : AppCompatActivity() {
         }
 
         layout.addView(TextView(this).apply {
-            text = "写一句话，模型只回答「是」或「否」。\n" +
-                   "例：数码管读数是否已接近 001680\n" +
-                   "想播报就把要播的话写在句号后面：\n" +
-                   "数码管读数是否已接近 001680。快充好了\n" +
-                   "没有句号 = 命中只响提示音"
+            text = "前半句是判断条件，模型只回答「是」或「否」。\n" +
+                   "例：读数是否已接近001680\n" +
+                   "句号后面可以跟一个问题（可选），条件成立时模型会回答它并语音播报：\n" +
+                   "读数是否已接近001680。还需要充多久？\n" +
+                   "没有句号 = 条件成立只响提示音"
             textSize = 11f
             setTextColor(0xFF888888.toInt())
         })
@@ -363,7 +351,7 @@ class MainActivity : AppCompatActivity() {
                 android.widget.FrameLayout.LayoutParams.WRAP_CONTENT))
         }
         val dialog = AlertDialog.Builder(this)
-            .setTitle("规则：" + p.field.ifBlank { p.name })
+            .setTitle(p.title())
             .setView(scroll)
             .setPositiveButton("保存", null)
             .setNeutralButton("试听第一条", null)
@@ -399,9 +387,9 @@ class MainActivity : AppCompatActivity() {
                 Toast.makeText(this, text, Toast.LENGTH_SHORT).show()
             }
             dialog.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener {
-                val sp = AskRule.speechOf(input.text.toString())
-                speak(sp.ifBlank { "测试播报" })
-                Toast.makeText(this, if (sp.isBlank()) "没有播报词，命中只响提示音" else "试听：$sp",
+                val q = AskRule.questionOf(input.text.toString())
+                Toast.makeText(this,
+                    if (q.isBlank()) "条件成立时只响提示音" else "条件成立后会问模型：$q",
                     Toast.LENGTH_SHORT).show()
             }
         }
@@ -715,7 +703,18 @@ class MainActivity : AppCompatActivity() {
                                 resultAtByPatch[p.id] = SystemClock.elapsedRealtime()
                                 val dt = (SystemClock.elapsedRealtime() - t0) / 1000.0
                                 pnLog("local: ocr → 「$r」 用时 %.1fs".format(dt))
-                                runOnUiThread { setStatus("本地 ${String.format("%.1f", dt)}s ${bmp.width}x${bmp.height} → 「$r」") }
+                                runOnUiThread { setStatus("本地 ${String.format("%.1f", dt)}s → 「$r」") }
+                            }
+
+                            // 条件成立且是「否→是」的跃变时，再把句号后的问题问一遍，答案拿去播报
+                            val q = AskRule.questionOf(p.ask)
+                            if (q.isNotBlank() && r.trim() == "是" && nlState[p.id] != true) {
+                                val t1 = SystemClock.elapsedRealtime()
+                                val ans = try {
+                                    NativeOcr.ocrPrompt(rgb, bw, bh, q, p.think).trim()
+                                } catch (e: Throwable) { "" }
+                                pnLog("local: 追问「$q」→ 「$ans」 用时 ${(SystemClock.elapsedRealtime() - t1) / 1000.0}s")
+                                if (ans.isNotBlank() && !ans.startsWith("ERR")) r = "是|" + ans
                             }
                         }
                     } catch (e: Throwable) {
@@ -1071,13 +1070,13 @@ class MainActivity : AppCompatActivity() {
      * 只在「否 → 是」的跃变时响一次；条件恢复后才重新武装，避免条件持续满足时一直响。
      */
     private fun onVerdict(p: Patch, rawIn: String) {
-        val parts = rawIn.split("|")
+        val parts = rawIn.split("|", limit = 2)
         val raw = parts[0]
-        val digits = parts.getOrNull(1)?.trim().orEmpty()
+        val answer = parts.getOrNull(1)?.trim().orEmpty()
         val yes = AskRule.parse(raw)
         val shown = when (yes) {
-            true -> if (digits.isEmpty()) "是" else "$digits 是"
-            false -> if (digits.isEmpty()) "否" else "$digits 否"
+            true -> if (answer.isEmpty()) "是" else "是 · $answer"
+            false -> "否"
             null -> rawIn.take(16).ifBlank { "?" }
         }
         reads[p.id] = PatchRead(p.id, shown, null, SystemClock.elapsedRealtime())
@@ -1094,8 +1093,9 @@ class MainActivity : AppCompatActivity() {
             if (prev) nlRearmAt[p.id] = now + REARM_MS
         }
 
-        if (SystemClock.elapsedRealtime() - lastUiAt > 400) {
-            lastUiAt = SystemClock.elapsedRealtime()
+        // 只在显示内容真的变了才重建列表：原来每 400ms 重建一遍，预览跟着抖
+        if (lastShown[p.id] != shown) {
+            lastShown[p.id] = shown
             runOnUiThread { refreshPatchList() }
         }
 
@@ -1103,12 +1103,15 @@ class MainActivity : AppCompatActivity() {
             val canFire = now >= (nlRearmAt[p.id] ?: 0L)
             if (canFire) {
                 nlRearmAt[p.id] = now + REARM_MS
-                val speech = AskRule.speechOf(p.ask)
-                pnLog("规则命中：${p.field} 「${AskRule.conditionOf(p.ask)}」 → 播报「$speech」")
-                triggerAlert(p, speech, 5, AskRule.conditionOf(p.ask))
+                val text = if (answer.isNotBlank()) answer else ""
+                pnLog("条件成立：${p.title()} → 播报「$text」")
+                triggerAlert(p, text, if (text.isBlank()) 5 else 8, p.title())
             }
         }
-        setStatus("${p.field}: $shown")
+        if (SystemClock.elapsedRealtime() - lastUiAt > 1000) {
+            lastUiAt = SystemClock.elapsedRealtime()
+            setStatus("${p.title()}：$shown")
+        }
     }
 
     // ---------------------------------------------------------------- 播报

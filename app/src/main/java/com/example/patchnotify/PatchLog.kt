@@ -154,7 +154,7 @@ object PatchLog {
     }
 
     private fun fileFor(d: File, p: Patch): File? {
-        val safe = (p.field.ifBlank { p.name }.ifBlank { "patch" })
+        val safe = p.title()
             .replace(Regex("[^\\p{L}\\p{N}_-]"), "_")
             .take(24)
         val key = Integer.toHexString(("${p.x},${p.y},${p.w},${p.h}").hashCode())
@@ -162,7 +162,7 @@ object PatchLog {
     }
 
     private fun patchHeader(p: Patch): String = buildString {
-        append("# patch=").append(p.field.ifBlank { p.name })
+        append("# patch=").append(p.title())
         append(" id=").append(p.id)
         append(" rect=").append(String.format(Locale.US, "%.4f,%.4f,%.4f,%.4f", p.x, p.y, p.w, p.h))
         append(" mode=").append(p.mode).append(" kind=").append(p.kind).append(" pick=").append(p.pick)

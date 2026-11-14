@@ -31,6 +31,9 @@ object AskRule {
 
     fun speechOf(ask: String) = split(ask).second
 
+    /** 句号后面那句：条件成立时让模型回答的问题 */
+    fun questionOf(ask: String) = split(ask).second
+
     /** 交给模型的完整提示词：封闭问句，只允许回答是/否 */
     fun prompt(ask: String): String {
         val cond = conditionOf(ask)
