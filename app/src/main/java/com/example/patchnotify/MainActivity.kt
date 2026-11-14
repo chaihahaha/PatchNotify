@@ -98,7 +98,7 @@ class MainActivity : AppCompatActivity() {
 
     companion object {
         /** 每次发版改这里，屏幕上会显示，便于确认装的是哪个包 */
-        const val BUILD_TAG = "v71-next-catch"
+        const val BUILD_TAG = "v73-next-fix"
         private const val REQ_PERMS = 1001
         private const val FRAME_INTERVAL_MS = 250L      // 4 fps
         private const val OCR_BUDGET_MS = 200L
@@ -577,9 +577,11 @@ class MainActivity : AppCompatActivity() {
             idx++
             processed++
 
+            pnLog("next 裁图 rect=${p.x},${p.y},${p.w},${p.h} 整帧=${bitmap.width}x${bitmap.height} recycled=${bitmap.isRecycled}")
             val crop = try {
                 cropPatch(bitmap, p, 0)
-            } catch (e: Exception) {
+            } catch (e: Throwable) {
+                pnLog("cropPatch 抛异常: " + android.util.Log.getStackTraceString(e).take(600))
                 null
             }
             if (crop == null) {
@@ -728,15 +730,13 @@ class MainActivity : AppCompatActivity() {
                 busy = false              // ★ 推理在后台线程跑，这里不能占着 busy
                 return
             }
-
-        next()
-    
             } catch (t: Throwable) {
                 pnLog("next 异常: " + android.util.Log.getStackTraceString(t).take(800))
                 busy = false
                 localBusy = false
             }
-}
+        }
+        next()
     }
 
     /** 裁剪 + 摆正 + 数码管增强 */
