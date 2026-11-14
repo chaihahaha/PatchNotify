@@ -83,6 +83,7 @@ class MainActivity : AppCompatActivity() {
     private val resultByPatch = HashMap<String, String>()
     private val resultAtByPatch = HashMap<String, Long>()
     private var localBusy = false
+    private var localBusyAt = 0L
     private var localReady = false
     private var localModelDir = java.io.File(
         android.os.Environment.getExternalStorageDirectory(), "patchnotify/qwen_2b"
@@ -95,7 +96,7 @@ class MainActivity : AppCompatActivity() {
 
     companion object {
         /** 每次发版改这里，屏幕上会显示，便于确认装的是哪个包 */
-        const val BUILD_TAG = "v66-simple"
+        const val BUILD_TAG = "v67-fix"
         private const val REQ_PERMS = 1001
         private const val FRAME_INTERVAL_MS = 250L      // 4 fps
         private const val OCR_BUDGET_MS = 200L
@@ -573,17 +574,30 @@ class MainActivity : AppCompatActivity() {
                     return
                 }
                 if (localBusy) {
-                    if (SystemClock.elapsedRealtime() - lastBusyLogAt > 2000) {
-                        lastBusyLogAt = SystemClock.elapsedRealtime()
-                        pnLog("local: 上一帧还在推理，丢帧")
+                    val stuck = SystemClock.elapsedRealtime() - localBusyAt
+                    if (stuck > 60_000) {
+                        // 推理线程异常死掉时会把整条管线冻住，这里强制解开
+                        pnLog("local: 推理卡了 ${stuck / 1000}s，强制复位")
+                        localBusy = false
+                    } else {
+                        if (SystemClock.elapsedRealtime() - lastBusyLogAt > 2000) {
+                            lastBusyLogAt = SystemClock.elapsedRealtime()
+                            pnLog("local: 上一帧还在推理，丢帧")
+                        }
+                        crop.recycle(); next(); return
                     }
-                    crop.recycle(); next(); return
                 }
                 localBusy = true
+                localBusyAt = SystemClock.elapsedRealtime()
                 val bmp = crop
                 if (p.ask.isBlank()) {
-                    pnLog("local: 该 patch 还没写判断条件，跳过")
-                    crop.recycle(); localBusy = false; busy = false; return
+                    pnLog("local: ${p.field} 还没有判断条件，跳过并提示")
+                    crop.recycle()
+                    bitmap.recycle()
+                    localBusy = false
+                    busy = false
+                    setStatus("「${p.field}」还没写判断条件 —— 点「设条件」写一句话，例如：读数是否已接近001680")
+                    return
                 }
                 val fs = "${bmp.width}x${bmp.height}"
                 if (fs != lastFrameSize) { lastFrameSize = fs; pnLog("local: 整帧=${bitmap.width}x${bitmap.height} crop=$fs") }
