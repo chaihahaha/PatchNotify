@@ -13,14 +13,28 @@
 #   GGML_LTO=ON            链接时优化
 #   GGML_OPENMP=OFF        Android 上没有可用的 OpenMP 运行时
 #
-# 用法：
+# llama.cpp 以 git submodule 形式放在 third_party/llama.cpp，克隆后执行：
+#   git submodule update --init --depth 1
+#
+# 用法（默认就用仓库内的 submodule）：
+#   ./scripts/build-llama-android.sh
+# 也可以指到外部的 llama.cpp 源码树：
 #   LLAMA_DIR=~/source/llama.cpp ./scripts/build-llama-android.sh
 set -euo pipefail
 
 ANDROID_NDK="${ANDROID_NDK:-$HOME/Library/Android/sdk/ndk/27.2.12479018}"
-LLAMA_DIR="${LLAMA_DIR:-$HOME/source/llama.cpp}"
-BUILD_DIR="${BUILD_DIR:-$LLAMA_DIR/build-android-cpu}"
 PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+# 优先用仓库内的 submodule；没初始化就退回本机已有的 llama.cpp 源码树
+if [ -z "${LLAMA_DIR:-}" ]; then
+  for c in "$PROJECT_DIR/third_party/llama.cpp" "$HOME/source/llama.cpp"; do
+    if [ -f "$c/CMakeLists.txt" ]; then LLAMA_DIR="$c"; break; fi
+  done
+fi
+if [ -z "${LLAMA_DIR:-}" ] || [ ! -f "$LLAMA_DIR/CMakeLists.txt" ]; then
+  echo "找不到 llama.cpp 源码。执行 git submodule update --init --depth 1 或设置 LLAMA_DIR" >&2
+  exit 1
+fi
+BUILD_DIR="${BUILD_DIR:-$PROJECT_DIR/.llama-build-cpu}"
 JNILIBS="$PROJECT_DIR/app/src/main/jniLibs/arm64-v8a"
 ABI=arm64-v8a
 API=28
