@@ -34,7 +34,13 @@ if [ -z "${LLAMA_DIR:-}" ] || [ ! -f "$LLAMA_DIR/CMakeLists.txt" ]; then
   echo "找不到 llama.cpp 源码。执行 git submodule update --init --depth 1 或设置 LLAMA_DIR" >&2
   exit 1
 fi
-BUILD_DIR="${BUILD_DIR:-$PROJECT_DIR/.llama-build-cpu}"
+if [ -z "${BUILD_DIR:-}" ]; then
+  BUILD_DIR="$PROJECT_DIR/.llama-build-cpu"
+  # 复用外部源码树里已有的构建目录，避免重复全量编译
+  if [ ! -f "$BUILD_DIR/CMakeCache.txt" ] && [ -f "$LLAMA_DIR/build-android-cpu/CMakeCache.txt" ]; then
+    BUILD_DIR="$LLAMA_DIR/build-android-cpu"
+  fi
+fi
 JNILIBS="$PROJECT_DIR/app/src/main/jniLibs/arm64-v8a"
 ABI=arm64-v8a
 API=28
