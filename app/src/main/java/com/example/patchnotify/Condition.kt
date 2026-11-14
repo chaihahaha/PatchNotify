@@ -32,8 +32,11 @@ object Condition {
     }
 
     /** 第二段：条件成立后追问的那句，要的是内容而不是是/否 */
-    fun questionPrompt(question: String): String =
-        "看画面回答问题：${question.trim()}。直接给出答案，不要解释。"
+    fun questionPrompt(question: String): String {
+        // 用户写的时候通常自带问号，别再拼一个「。」变成「？。」
+        val q = question.trim().trimEnd('。', '？', '?', '！', '!', '.')
+        return "看画面回答问题：$q。直接给出答案，不要解释。"
+    }
 
     /**
      * 解析模型输出。返回 null = 没读懂（既没说是否）。

@@ -99,7 +99,7 @@ class MainActivity : AppCompatActivity() {
 
     companion object {
         /** 每次发版改这里，屏幕上会显示，便于确认装的是哪个包 */
-        const val BUILD_TAG = "v90-once"
+        const val BUILD_TAG = "v91-qa2"
         private const val REQ_PERMS = 1001
         private const val FRAME_INTERVAL_MS = 250L      // 4 fps
         private const val ROUND_BUDGET_MS = 200L
@@ -691,11 +691,21 @@ class MainActivity : AppCompatActivity() {
                             val q = Condition.questionOf(p.ask)
                             if (q.isNotBlank() && r.trim() == "是" && nlState[p.id] != true) {
                                 val t1 = SystemClock.elapsedRealtime()
-                                val ans = try {
+                                var ans = try {
                                     // openAnswer：这句是问答，不是是/否判断
                                     Vlm.ask(rgb, bw, bh, q, p.think, openAnswer = true).trim()
-                                } catch (e: Throwable) { "" }
+                                } catch (e: Throwable) { "ERR:" + e.message }
                                 pnLog("local: 追问「$q」→ 「$ans」 用时 ${(SystemClock.elapsedRealtime() - t1) / 1000.0}s")
+                                // 思考模式被截断 / 返回空 → 换成不思考再问一次，别让答案变成空
+                                if (ans.isBlank() || ans.startsWith("ERR")) {
+                                    val t2 = SystemClock.elapsedRealtime()
+                                    val retry = try {
+                                        Vlm.ask(rgb, bw, bh, q, false, openAnswer = true).trim()
+                                    } catch (e: Throwable) { "ERR:" + e.message }
+                                    pnLog("local: 追问重试(不思考) 「${retry}」 用时 ${(SystemClock.elapsedRealtime() - t2) / 1000.0}s")
+                                    if (retry.isNotBlank() && !retry.startsWith("ERR")) ans = retry
+                                }
+                                pnLog("local: 问答原始输出 prompt=「${Condition.questionPrompt(q)}」 raw=「${ans.replace("\n", " ")}」")
                                 if (ans.isNotBlank() && !ans.startsWith("ERR")) {
                                     ansText = ans
                                     r = "是|" + ans
