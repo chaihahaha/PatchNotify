@@ -99,7 +99,7 @@ class MainActivity : AppCompatActivity() {
 
     companion object {
         /** 每次发版改这里，屏幕上会显示，便于确认装的是哪个包 */
-        const val BUILD_TAG = "v76-think"
+        const val BUILD_TAG = "v78-shots"
         private const val REQ_PERMS = 1001
         private const val FRAME_INTERVAL_MS = 250L      // 4 fps
         private const val OCR_BUDGET_MS = 200L
@@ -119,7 +119,7 @@ class MainActivity : AppCompatActivity() {
         val soc = if (android.os.Build.VERSION.SDK_INT >= 31) android.os.Build.SOC_MODEL else "?"
         pnLog("=== 启动 $BUILD_TAG 权限=${hasAllFilesAccess()} ===")
         pnLog("device: model=${android.os.Build.MODEL} soc=$soc hw=${android.os.Build.HARDWARE} abi=${android.os.Build.SUPPORTED_ABIS.firstOrNull()}")
-        try { PatchLog.init(this, java.io.File(logDir())) } catch (e: Exception) { pnLog("patchlog init 失败: ${e.message}") }
+        try { PatchShot.init(java.io.File(logDir())) } catch (e: Exception) { pnLog("截图目录初始化失败: ${e.message}") }
         initTts()
         setupUi()
 
@@ -655,6 +655,12 @@ class MainActivity : AppCompatActivity() {
                                 runOnUiThread { setStatus("${String.format("%.1f", dt)}s → ${r.take(20)}") }
                             }
 
+                            // 截图存档：平时 60 秒一张，条件成立的那一帧强制补一张
+                            try {
+                                val hit = r.trim().startsWith("是") && nlState[p.id] != true
+                                PatchShot.maybe(p, bmp, hit)
+                            } catch (_: Throwable) { }
+
                             // 条件成立且是「否→是」的跃变时，再把句号后的问题问一遍，答案拿去播报
                             val q = AskRule.questionOf(p.ask)
                             if (q.isNotBlank() && r.trim() == "是" && nlState[p.id] != true) {
@@ -1029,10 +1035,6 @@ class MainActivity : AppCompatActivity() {
             null -> rawIn.take(16).ifBlank { "?" }
         }
         reads[p.id] = PatchRead(p.id, shown, SystemClock.elapsedRealtime())
-
-        try {
-            if (PatchLog.shouldLog(p.id, shown)) PatchLog.log(p, shown)
-        } catch (_: Exception) { }
 
         val prev = nlState[p.id] ?: false
         nlState[p.id] = (yes == true)
