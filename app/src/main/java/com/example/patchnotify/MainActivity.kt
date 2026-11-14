@@ -71,6 +71,7 @@ class MainActivity : AppCompatActivity() {
     private var lastNullLogAt = 0L
     private var lastFrameAt = 0L
     private var lastFrameLogAt = 0L
+    private var lastTickLogAt = 0L
     private var rrIndex = 0
     private val nlState = HashMap<String, Boolean>()     // patch -> 上次是否命中
     private val nlRearmAt = HashMap<String, Long>()      // patch -> 允许再次触发的时间
@@ -97,7 +98,7 @@ class MainActivity : AppCompatActivity() {
 
     companion object {
         /** 每次发版改这里，屏幕上会显示，便于确认装的是哪个包 */
-        const val BUILD_TAG = "v69-frame-log"
+        const val BUILD_TAG = "v70-tick"
         private const val REQ_PERMS = 1001
         private const val FRAME_INTERVAL_MS = 250L      // 4 fps
         private const val OCR_BUDGET_MS = 200L
@@ -526,6 +527,7 @@ class MainActivity : AppCompatActivity() {
             bitmap = proxy.toBitmap()
             rot = proxy.imageInfo.rotationDegrees
         } catch (e: Exception) {
+            pnLog("toBitmap 失败: " + (e.message ?: e.javaClass.simpleName))
             proxy.close(); return
         }
 
@@ -550,6 +552,10 @@ class MainActivity : AppCompatActivity() {
             return
         }
 
+        if (now - lastTickLogAt > 3000) {
+            lastTickLogAt = now
+            pnLog("开始轮询 targets=${targets.size} 整帧=${bitmap.width}x${bitmap.height} rot=$rot")
+        }
         busy = true
         busyAt = SystemClock.elapsedRealtime()
         val t0 = SystemClock.elapsedRealtime()
@@ -559,6 +565,7 @@ class MainActivity : AppCompatActivity() {
         fun next() {
             if (processed >= targets.size ||
                 SystemClock.elapsedRealtime() - t0 > OCR_BUDGET_MS) {
+                if (processed == 0) pnLog("next() 直接返回：budget=${SystemClock.elapsedRealtime() - t0}ms")
                 bitmap.recycle()
                 busy = false
                 rrIndex = (rrIndex + processed + 1) % targets.size
