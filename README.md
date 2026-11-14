@@ -165,3 +165,7 @@ CPU 版本还带来两个副作用：不占 GPU，相机预览不卡；没有 Vu
 - 每区域截图各自封顶 2 GB（不设张数上限），超了按时间从旧到新删；无全局上限
 - 运行日志写在模型目录的父目录：`app.log`（Kotlin 侧）和 `native.log`（C++ 侧）
 - 区域参数保存在 SharedPreferences / 应用私有 JSON
+
+## 许可证
+
+本项目以 GNU General Public License v3.0 发布，全文见 [LICENSE](LICENSE)。
