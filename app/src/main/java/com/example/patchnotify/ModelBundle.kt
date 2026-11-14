@@ -5,18 +5,17 @@ import android.os.Environment
 import java.io.File
 
 /**
- * 「免配置安装包」：APK 的 assets 里直接带 GGUF，首次启动拷到 sdcard。
+ * 「免配置安装包」：APK 的 assets 里直接带 GGUF，首次启动释放到**应用私有目录**：
  *
- *   assets/model/Qwen3.5-2B-UD-IQ2_M.gguf  → <sdcard>/patchnotify/qwen_2b/
- *   assets/mmproj/mmproj-Q8_0.gguf         → 同上
+ *   assets/model/...gguf   → /data/data/com.example.patchnotify/files/models/
+ *   assets/mmproj/...gguf  → 同上
  *
- * 三条规则：
- *   1. 用户自己放的模型优先 —— 目录里已经有可用的一份就什么都不做，绝不覆盖
- *   2. 目标文件已存在且大小正确 → 跳过（重装/升级不会重复拷 1.2 GB）
- *   3. 没有这些资产（普通构建）→ bundled() 返回 false，整段逻辑不执行
+ * 放私有目录而不是 sdcard 的原因：不需要存储权限、不会被清理软件或用户误删、
+ * 卸载时跟着一起走。想换模型的人仍然可以把文件放到 sdcard 的 patchnotify/qwen_2b/，
+ * 那条路径优先。
  *
- * llama.cpp 只接受文件路径，没法直接 mmap APK 里的 asset，所以这一份拷贝省不掉；
- * 但它只发生一次，而且不会在 sdcard 上留下第二份临时文件。
+ * assets 是 APK 压缩包里的条目，不是文件系统里的文件，llama.cpp 只接受路径，
+ * 所以第一次启动必须把它写出来一次；之后就一直复用。
  */
 object ModelBundle {
 
@@ -27,7 +26,10 @@ object ModelBundle {
         Item("mmproj/mmproj-Q8_0.gguf", "mmproj-Q8_0.gguf", 361_518_784L)
     )
 
-    fun targetDir(): File = File(
+    fun targetDir(ctx: Context): File = File(ctx.filesDir, "models")
+
+    /** 用户自己放在 sdcard 上的模型目录（优先于自带模型） */
+    fun userDir(): File = File(
         Environment.getExternalStorageDirectory(), "patchnotify/qwen_2b"
     )
 
@@ -42,13 +44,15 @@ object ModelBundle {
      */
     fun ensure(ctx: Context, say: (String) -> Unit): Boolean {
         if (!bundled(ctx)) return false
-        val dir = targetDir()
 
         // 用户已经准备好一份了 → 一律不动
-        if (hasModel(dir) && hasMmproj(dir)) {
-            say("检测到已有模型，使用 sdcard 上的版本")
+        val user = userDir()
+        if (hasModel(user) && hasMmproj(user)) {
+            say("检测到 sdcard 上已有模型，优先使用它")
             return true
         }
+
+        val dir = targetDir(ctx)
         if (!dir.isDirectory && !dir.mkdirs()) {
             say("无法创建目录 ${dir.absolutePath}")
             return false

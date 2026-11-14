@@ -179,13 +179,14 @@ app/src/main/assets/model/Qwen3.5-2B-UD-IQ2_M.gguf     820 MiB
 app/src/main/assets/mmproj/mmproj-Q8_0.gguf            345 MiB（从 F16 量化，637 → 345）
 ```
 
-首次启动时 `ModelBundle` 把资产拷到 `<sdcard>/patchnotify/qwen_2b/`，校验字节数后结束：
+首次启动时 `ModelBundle` 把资产释放到**应用私有目录** `files/models/`，校验字节数后结束
+（私有目录不需要存储权限，也不会被清理软件删掉）：
 
-- **用户自己放的模型优先**：目录里已经有模型 + mmproj，就完全不动，直接用用户的
+- **用户自己放的模型优先**：`<sdcard>/patchnotify/qwen_2b/` 里有模型 + mmproj 就完全不动
 - 目标文件已存在且大小正确 → 跳过，重装/升级不会重复拷 1.2 GB
 - 普通构建的 assets 里没有这些文件，`bundled()` 返回 false，整段逻辑不执行
 - 生成资产：`./scripts/make-model-assets.sh`
-- APK 约 1.2 GB；安装要先复制进 `/data/app`，首次启动再拷一份到 sdcard
+- APK 约 1.2 GB；安装要先复制进 `/data/app`，首次启动再释放一份到私有目录
 
 为什么不压成 .tenz：IQ2 那种查表量化 tenz 没有模型，820 MiB 只省到 782 MiB（4.6%），
 而 llama.cpp 只接受文件路径、没法直接 mmap APK 里的 asset，拷贝本来就要做一次，

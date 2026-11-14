@@ -117,6 +117,11 @@ class MainActivity : AppCompatActivity() {
         if (ModelBundle.bundled(this)) {
             Thread {
                 ModelBundle.ensure(this) { msg -> runOnUiThread { setStatus(msg) } }
+                // 自带模型释放完就把默认目录指过去（sdcard 上有用户的模型时不会被覆盖）
+                val priv = ModelBundle.targetDir(this)
+                if (priv.isDirectory && hasGguf(priv) && !hasGguf(java.io.File(localModelDir))) {
+                    localModelDir = priv.absolutePath
+                }
                 runOnUiThread { refreshPatchList() }
             }.start()
         }
@@ -919,6 +924,9 @@ class MainActivity : AppCompatActivity() {
         for (c in cands) c.listFiles()?.filter { it.isDirectory }?.forEach {
             if (hasGguf(it)) return it.absolutePath
         }
+        // 最后才是安装包自带、释放到私有目录的那份
+        val priv = java.io.File(filesDir, "models")
+        if (hasGguf(priv)) return priv.absolutePath
         return localModelDir
     }
 
@@ -956,7 +964,15 @@ class MainActivity : AppCompatActivity() {
     }
 
     /** 诊断日志：写 logcat + patchnotify/app.log（模型目录的上一层） */
-    private fun logDir(): String = java.io.File(localModelDir).parent ?: localModelDir
+    /**
+     * 日志和截图固定放 sdcard/patchnotify，跟模型放哪无关
+     * （自带模型在私有目录，不能再把 2 GB 截图写进 /data）
+     */
+    private fun logDir(): String {
+        val sd = java.io.File(android.os.Environment.getExternalStorageDirectory(), "patchnotify")
+        if (sd.isDirectory || sd.mkdirs()) return sd.absolutePath
+        return filesDir.absolutePath
+    }
     private fun pnLog(msg: String) {
         android.util.Log.i("PatchNotify", msg)
         try {
