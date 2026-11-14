@@ -42,9 +42,20 @@ scripts/
 仓库不包含二进制（`*.so` 与 `app/src/main/jniLibs/` 已在 `.gitignore` 里），自己编一次：
 
 ```bash
-LLAMA_DIR=~/source/llama.cpp ./scripts/build-llama-android.sh
+# 第一次：拉取 pin 住的 llama.cpp（已初始化过就跳过）
+git submodule update --init --depth 1
+./scripts/build-llama-android.sh
 ./gradlew assembleDebug
 ```
+
+`git submodule update` 走 https，若本机连不上 github.com 的 443，可以临时改用 SSH 拉取：
+
+```bash
+git -c submodule.third_party/llama.cpp.url=git@github.com:ggml-org/llama.cpp.git \
+    submodule update --init --depth 1
+```
+
+本机已经有 llama.cpp 源码树时，脚本会自动用它（`LLAMA_DIR=~/source/llama.cpp` 亦可显式指定），不需要再拉一份。
 
 脚本会编出 `libggml-base / libggml-cpu / libggml / libllama / libmtmd / libpnllama.so`
 并拷进 `app/src/main/jniLibs/arm64-v8a/`。
