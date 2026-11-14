@@ -99,7 +99,7 @@ class MainActivity : AppCompatActivity() {
 
     companion object {
         /** 每次发版改这里，屏幕上会显示，便于确认装的是哪个包 */
-        const val BUILD_TAG = "v82-meta"
+        const val BUILD_TAG = "v83-append"
         private const val REQ_PERMS = 1001
         private const val FRAME_INTERVAL_MS = 250L      // 4 fps
         private const val ROUND_BUDGET_MS = 200L
@@ -225,7 +225,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun askFieldName(x: Float, y: Float, w: Float, h: Float) {
         // 不再让用户起字段名：显示名直接用判断条件的前 10 个字
-        val np = Patch(x = x, y = y, w = w, h = h, monitor = true)
+        val np = Patch(x = x, y = y, w = w, h = h, monitor = true, updatedAt = System.currentTimeMillis())
         patches.add(np)
         ConfigStore.save(this, patches)
         refreshPatchList()
@@ -331,6 +331,7 @@ class MainActivity : AppCompatActivity() {
                 }
                 p.ask = ask
                 p.think = thinkBox.isChecked
+                p.updatedAt = System.currentTimeMillis()
                 localModelDir = dirInput.text.toString().trim().trimEnd('/')
                 localReady = false
                 getSharedPreferences("patchnotify", MODE_PRIVATE).edit()

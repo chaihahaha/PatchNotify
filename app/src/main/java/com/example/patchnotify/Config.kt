@@ -19,7 +19,9 @@ data class Patch(
     /** 一句话规则：「条件。条件成立后要问的问题（可选）」。VLM 只回答是/否 */
     var ask: String = "",
     /** 允许模型先思考再回答（慢，开放条件才需要） */
-    var think: Boolean = false
+    var think: Boolean = false,
+    /** 用户最后一次保存这个区域/条件的时间（毫秒） */
+    var updatedAt: Long = 0L
 ) {
     fun toJson(): JSONObject = JSONObject().apply {
         put("id", id)
@@ -28,6 +30,7 @@ data class Patch(
         put("monitor", monitor)
         put("ask", ask)
         put("think", think)
+        put("updated_at", updatedAt)
     }
 
     companion object {
@@ -59,7 +62,8 @@ data class Patch(
                 h = o.optDouble("h", 0.0).toFloat(),
                 monitor = o.optBoolean("monitor", true),
                 ask = ask,
-                think = o.optBoolean("think", false)
+                think = o.optBoolean("think", false),
+                updatedAt = o.optLong("updated_at", 0L)
             )
         }
     }

@@ -61,17 +61,28 @@ object PatchShot {
         }
     }
 
-    /** 条件或矩形变了就重写 meta.json，保证这个目录存的是什么永远能查回来 */
+    /**
+     * 条件/矩形/思考开关一变就新写一份 meta_<时间>.json。
+     * 绝不覆盖旧文件——历史配置本身就是要留档的东西。
+     */
     private fun ensureMeta(p: Patch) {
         val dir = dirFor(p) ?: return
-        val sig = "${p.ask}|${p.x},${p.y},${p.w},${p.h}|${p.think}"
-        if (metaSig[p.id] == sig) return
+        val sig = "${p.ask}|${p.x},${p.y},${p.w},${p.h}|${p.think}|${p.updatedAt}"
+        if (metaSig.containsKey(p.id) && metaSig[p.id] == sig) return
+        if (!metaSig.containsKey(p.id) && sig == loadSig(dir)) {
+            metaSig[p.id] = sig           // 重启后配置没变，不重复写
+            return
+        }
         metaSig[p.id] = sig
+
         val o = JSONObject().apply {
             put("patch_id", p.id)
             put("title", p.title())
             put("ask", p.ask)
             put("think", p.think)
+            put("set_at", iso(if (p.updatedAt > 0) p.updatedAt else System.currentTimeMillis()))
+            put("updated_at", p.updatedAt)
+            put("recorded_at", isoNow())
             put("rect_normalized", JSONObject().apply {
                 put("x", p.x.toDouble()); put("y", p.y.toDouble())
                 put("w", p.w.toDouble()); put("h", p.h.toDouble())
@@ -85,15 +96,28 @@ object PatchShot {
                 put("width", (p.w * frameW).toInt())
                 put("height", (p.h * frameH).toInt())
             })
-            put("written_at", isoNow())
             put("app", appVersion)
             put("device", device)
             put("note", "文件名里的时间是截图时刻；_hit 结尾的是条件成立时补拍的；" +
                     "events.log 记录每次命中的判定与问答")
         }
-        try {
-            File(dir, "meta.json").writeText(o.toString(2))
-        } catch (_: Throwable) { }
+        val stamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
+        var f = File(dir, "meta_$stamp.json")
+        var i = 2
+        while (f.exists()) { f = File(dir, "meta_${stamp}_$i.json"); i++ }
+        try { f.writeText(o.toString(2)) } catch (_: Throwable) { }
+    }
+
+    /** 读目录里最新一份 meta，用来判断重启后配置是否真的变了 */
+    private fun loadSig(dir: File): String? {
+        val latest = dir.listFiles { f -> f.isFile && f.name.startsWith("meta_") && f.name.endsWith(".json") }
+            ?.maxByOrNull { it.name } ?: return null
+        return try {
+            val o = JSONObject(latest.readText())
+            val r = o.optJSONObject("rect_normalized") ?: return null
+            "${o.optString("ask")}|${r.optDouble("x")},${r.optDouble("y")}," +
+                "${r.optDouble("w")},${r.optDouble("h")}|${o.optBoolean("think")}|${o.optLong("updated_at", 0L)}"
+        } catch (_: Throwable) { null }
     }
 
     /** 调用方必须在后台线程。force = 条件触发 */
@@ -166,6 +190,8 @@ object PatchShot {
         used[dir.path] = total
     }
 
-    private fun isoNow(): String =
-        SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ssZ", Locale.US).format(Date())
+    private fun isoNow(): String = iso(System.currentTimeMillis())
+
+    private fun iso(ms: Long): String =
+        SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ssZ", Locale.US).format(Date(ms))
 }
