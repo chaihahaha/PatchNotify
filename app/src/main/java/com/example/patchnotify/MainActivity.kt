@@ -99,7 +99,7 @@ class MainActivity : AppCompatActivity() {
 
     companion object {
         /** 每次发版改这里，屏幕上会显示，便于确认装的是哪个包 */
-        const val BUILD_TAG = "v91-qa2"
+        const val BUILD_TAG = "v92-audit"
         private const val REQ_PERMS = 1001
         private const val FRAME_INTERVAL_MS = 250L      // 4 fps
         private const val ROUND_BUDGET_MS = 200L
@@ -153,7 +153,7 @@ class MainActivity : AppCompatActivity() {
     private fun setupUi() {
         binding.btnAddPatch.setOnClickListener { startRectEdit() }
         binding.btnAddPatch.setOnLongClickListener {
-            Toast.makeText(this, "选一张照片测试识别效果", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, "选一张照片测试判断效果", Toast.LENGTH_SHORT).show()
             imagePicker.launch("image/*")
             true
         }
@@ -755,7 +755,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun testWithImage(uri: android.net.Uri) {
-        setStatus("正在识别这张照片……")
+        setStatus("正在判断这张照片……")
         lifecycleScope.launch {
             val result = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
                 try {
@@ -783,16 +783,20 @@ class MainActivity : AppCompatActivity() {
                         rgb[i * 3 + 1] = ((c shr 8) and 0xFF).toByte()
                         rgb[i * 3 + 2] = (c and 0xFF).toByte()
                     }
-                    "OK:" + w + "x" + h + "\u0001" + Vlm.ask(rgb, w, h, "读出图中数字", false)
+                    // 只是让用户看看模型能读到什么，别预设成「读数字」，
+                    // 也不用封闭问句（那会把提示词改成「只回答是或否」）
+                    "OK:" + w + "x" + h + "\u0001" + Vlm.ask(
+                        rgb, w, h, "描述这张图，有文字或数字就原样读出来", false, openAnswer = true
+                    )
                 } catch (e: Exception) {
                     "ERR:" + e.message
                 }
             }
             if (result.startsWith("ERR:")) { setStatus(result); return@launch }
             val parts = result.removePrefix("OK:").split("\u0001")
-            setStatus("照片识别完成")
+            setStatus("照片判断完成")
             AlertDialog.Builder(this@MainActivity)
-                .setTitle("照片识别结果")
+                .setTitle("照片判断结果")
                 .setMessage("尺寸：" + parts.getOrNull(0) + "\n\n模型回答：\n" + (parts.getOrNull(1) ?: ""))
                 .setPositiveButton("知道了", null)
                 .show()
