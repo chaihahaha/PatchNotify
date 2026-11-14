@@ -99,7 +99,8 @@ Java_com_example_patchnotify_NativeLlama_setLogPath(JNIEnv* env, jclass, jstring
 // rgb: w*h*3 字节；返回模型原始输出（已去掉 <think> 段）
 extern "C" JNIEXPORT jstring JNICALL
 Java_com_example_patchnotify_NativeLlama_ocr(JNIEnv* env, jclass, jbyteArray jrgb,
-                                             jint w, jint h, jstring jprompt, jint maxTok) {
+                                             jint w, jint h, jstring jprompt, jint maxTok,
+                                             jboolean allowThink) {
     std::lock_guard<std::mutex> lk(g_mu);
     if (!g_ctx || !g_mctx || !g_vocab) return env->NewStringUTF("ERR:not_init");
 
@@ -109,9 +110,11 @@ Java_com_example_patchnotify_NativeLlama_ocr(JNIEnv* env, jclass, jbyteArray jrg
     jbyte* data = env->GetByteArrayElements(jrgb, nullptr);
 
     // Qwen 对话格式 + 图像占位符
-    // 关掉 thinking：按官方 chat template 的 no-think 分支预填一个空 think 块
+    // 默认关 thinking：按官方 chat template 的 no-think 分支预填空 think 块。
+    // 用户勾了「允许思考」就不预填，让模型自己推理（慢，但开放式判断准得多）。
     std::string text = std::string("<|im_start|>user\n") + mtmd_default_marker() +
-                       prompt + "<|im_end|>\n<|im_start|>assistant\n" + "<think>\n\n</think>\n\n";
+                       prompt + "<|im_end|>\n<|im_start|>assistant\n";
+    if (!allowThink) text += "<think>\n\n</think>\n\n";
 
     int64_t tTok0 = ggml_time_us();
     mtmd_bitmap* bmp = mtmd_bitmap_init((uint32_t)w, (uint32_t)h, (const unsigned char*)data);

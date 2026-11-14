@@ -48,7 +48,9 @@ data class Patch(
     /** 识别内容：num（数字）/ cn（中文）/ en（英文）/ mix（混合） */
     var kind: String = "num",
     /** 自然语言规则："条件句。命中时播报的话"。VLM 只回答是/否 */
-    var ask: String = ""
+    var ask: String = "",
+    /** 允许模型先思考再回答（慢 ~10s，开放式条件才需要） */
+    var think: Boolean = false
 ) {
     fun toJson(): JSONObject = JSONObject().apply {
         put("id", id)
@@ -61,6 +63,7 @@ data class Patch(
         put("mode", mode)
         put("kind", kind)
         put("ask", ask)
+        put("think", think)
         val arr = JSONArray()
         rules.forEach { arr.put(it.toJson()) }
         put("rules", arr)
@@ -90,7 +93,8 @@ data class Patch(
                 pick = o.optString("pick", "max"),
                 mode = o.optString("mode", "local"),
                 kind = o.optString("kind", "num"),
-            ask = o.optString("ask", "")
+            ask = o.optString("ask", ""),
+            think = o.optBoolean("think", false)
             )
         }
     }

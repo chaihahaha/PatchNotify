@@ -120,7 +120,7 @@ class MainActivity : AppCompatActivity() {
 
     companion object {
         /** 每次发版改这里，屏幕上会显示，便于确认装的是哪个包 */
-        const val BUILD_TAG = "v64-ask"
+        const val BUILD_TAG = "v65-think"
         private const val REQ_PERMS = 1001
         private const val FRAME_INTERVAL_MS = 250L      // 4 fps
         private const val OCR_BUDGET_MS = 200L
@@ -354,9 +354,15 @@ class MainActivity : AppCompatActivity() {
         }
         layout.addView(input)
 
+        val thinkBox = android.widget.CheckBox(this).apply {
+            text = "允许模型先思考（开放式判断更准，每次多花约 10 秒）"
+            textSize = 12f
+            isChecked = p.think
+        }
+        layout.addView(thinkBox)
 
         layout.addView(TextView(this).apply {
-            text = "本地模型目录（识别方式选「本地 Qwen」时才用）"
+            text = "本地模型目录"
             textSize = 11f
             setTextColor(0xFF888888.toInt())
         })
@@ -405,6 +411,7 @@ class MainActivity : AppCompatActivity() {
                     return@setOnClickListener
                 }
                 p.ask = ask
+                p.think = thinkBox.isChecked
                 p.rules = mutableListOf()
                 p.mode = "local"
                 p.kind = "num"
@@ -704,7 +711,7 @@ class MainActivity : AppCompatActivity() {
                                         if (x == null) "ERR:读不到数字「${digits.take(8)}」"
                                         else (if (test(nc, x)) "是" else "否") + "|$digits"
                                     }
-                                    else -> NativeOcr.ocrPrompt(rgb, bw, bh, p.ask)
+                                    else -> NativeOcr.ocrPrompt(rgb, bw, bh, p.ask, p.think)
                                 }
                                 if (r.startsWith("ERR:TOOBIG:")) {
                                     val a = r.split(":")

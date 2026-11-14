@@ -18,7 +18,8 @@ object NativeLlama {
 
     external fun setLogPath(path: String)
     external fun init(modelPath: String, mmprojPath: String, nThreads: Int): String
-    external fun ocr(rgb: ByteArray, w: Int, h: Int, prompt: String, maxTok: Int): String
+    external fun ocr(rgb: ByteArray, w: Int, h: Int, prompt: String, maxTok: Int,
+                     allowThink: Boolean): String
     external fun release()
 }
 
@@ -87,16 +88,17 @@ object NativeOcr {
     fun ocr(rgb: ByteArray, w: Int, h: Int, kind: Int): String {
         if (!ready) return "ERR:模型未加载"
         val p = PROMPTS[kind.coerceIn(0, PROMPTS.size - 1)]
-        val raw = NativeLlama.ocr(rgb, w, h, p, 12)
+        val raw = NativeLlama.ocr(rgb, w, h, p, 12, false)
         if (raw.startsWith("ERR:")) return raw
         return if (kind == 0) extractDigits(raw) else raw.trim()
     }
 
     /** 自然语言规则：返回模型原话（应是/否） */
-    fun ocrPrompt(rgb: ByteArray, w: Int, h: Int, ask: String): String {
+    fun ocrPrompt(rgb: ByteArray, w: Int, h: Int, ask: String, allowThink: Boolean = false): String {
         if (!ready) return "ERR:模型未加载"
-        // 只允许 1~2 个 token，堵死 thinking 和解释
-        return NativeLlama.ocr(rgb, w, h, AskRule.prompt(ask), 6).trim()
+        // 不思考时只留 6 个 token；思考时给 400（实测思考链约 250~350 token）
+        val budget = if (allowThink) 400 else 6
+        return NativeLlama.ocr(rgb, w, h, AskRule.prompt(ask), budget, allowThink).trim()
     }
 
     private fun extractDigits(raw: String): String {
