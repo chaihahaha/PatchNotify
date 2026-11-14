@@ -69,9 +69,10 @@ class MainActivity : AppCompatActivity() {
     private var lastBusyLogAt = 0L
     private var lastCropDumpAt = 0L
     private var lastFrameSize = ""
-    private var lastSig: IntArray? = null
-    private var lastOcrResult: String? = null
-    private var lastOcrAt = 0L
+    // 帧间缓存必须按 patch 分开存：多个 patch 共用一份会把 A 的读数当成 B 的
+    private val sigByPatch = HashMap<String, IntArray>()
+    private val resultByPatch = HashMap<String, String>()
+    private val resultAtByPatch = HashMap<String, Long>()
     /** 自然语言规则("\~描述")的判定结果，键 = patchId|expr */
     private val nlHits = mutableMapOf<String, Boolean>()
 
@@ -117,7 +118,7 @@ class MainActivity : AppCompatActivity() {
 
     companion object {
         /** 每次发版改这里，屏幕上会显示，便于确认装的是哪个包 */
-        const val BUILD_TAG = "v61-cpu-clean"
+        const val BUILD_TAG = "v63-patchlog"
         private const val REQ_PERMS = 1001
         private const val FRAME_INTERVAL_MS = 250L      // 4 fps
         private const val OCR_BUDGET_MS = 200L
@@ -154,6 +155,7 @@ class MainActivity : AppCompatActivity() {
         val soc = if (android.os.Build.VERSION.SDK_INT >= 31) android.os.Build.SOC_MODEL else "?"
         pnLog("=== 启动 $BUILD_TAG 权限=${hasAllFilesAccess()} ===")
         pnLog("device: model=${android.os.Build.MODEL} soc=$soc hw=${android.os.Build.HARDWARE} abi=${android.os.Build.SUPPORTED_ABIS.firstOrNull()}")
+        try { PatchLog.init(this, java.io.File(logDir())) } catch (e: Exception) { pnLog("patchlog init 失败: ${e.message}") }
         initTts()
         setupUi()
 
@@ -692,16 +694,17 @@ class MainActivity : AppCompatActivity() {
                                     (((c shr 16) and 0xFF) * 299 + ((c shr 8) and 0xFF) * 587 + (c and 0xFF) * 114) / 1000
                                 }
                             } catch (e: Throwable) { null }
-                            val prev = lastSig
+                            val prev = sigByPatch[p.id]
                             var changed = true
                             if (prev != null && sig != null && prev.size == sig.size) {
                                 var n = 0
                                 for (i in sig.indices) if (kotlin.math.abs(sig[i] - prev[i]) > 28) n++
                                 changed = n > sig.size * 15 / 1000
                             }
-                            val cached = lastOcrResult
+                            val cached = resultByPatch[p.id]
+                            val cachedAt = resultAtByPatch[p.id] ?: 0L
                             if (!changed && cached != null && !cached.startsWith("ERR") &&
-                                SystemClock.elapsedRealtime() - lastOcrAt < 120_000) {
+                                SystemClock.elapsedRealtime() - cachedAt < 120_000) {
                                 r = cached
                                 pnLog("local: 画面未变化，复用「$r」")
                             } else {
@@ -711,9 +714,9 @@ class MainActivity : AppCompatActivity() {
                                     val a = r.split(":")
                                     r = "框太大：${a.getOrNull(2)} 个图像token（上限 ${a.getOrNull(3)}），请把框划小一点"
                                 }
-                                lastSig = sig
-                                lastOcrResult = r
-                                lastOcrAt = SystemClock.elapsedRealtime()
+                                sigByPatch[p.id] = sig ?: IntArray(0)
+                                resultByPatch[p.id] = r
+                                resultAtByPatch[p.id] = SystemClock.elapsedRealtime()
                                 val dt = (SystemClock.elapsedRealtime() - t0) / 1000.0
                                 pnLog("local: ocr → 「$r」 用时 %.1fs".format(dt))
                                 runOnUiThread { setStatus("本地 ${String.format("%.1f", dt)}s ${bmp.width}x${bmp.height} → 「$r」") }
@@ -1169,6 +1172,13 @@ class MainActivity : AppCompatActivity() {
         }
         reads[p.id] = PatchRead(p.id, raw, value, SystemClock.elapsedRealtime())
         val now = SystemClock.elapsedRealtime()
+
+        // 每个 patch 独立日志：内容变化即记，静止时每 60s 一条心跳
+        try {
+            if (PatchLog.shouldLog(p.id, raw)) {
+                PatchLog.log(p, raw, if (value != null) "value=$value" else "")
+            }
+        } catch (e: Exception) { pnLog("patchlog 写失败: ${e.message}") }
 
         var chosen: Rule? = null
         var anyHit = false
