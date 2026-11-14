@@ -12,20 +12,21 @@ import java.util.concurrent.ConcurrentHashMap
  *   - 正常情况每 60 秒一张
  *   - 条件触发时立刻补一张（不受 60 秒限制）
  *
- * 只保留每 patch 最近 [KEEP_PER_PATCH] 张，目录总量超过 [TOTAL_BUDGET] 或
- * 超过 [KEEP_DAYS] 天的也一并清掉。裁剪图很小（几百 KB 级位图压成 JPEG 通常 10~30 KB）。
+ * 每个区域各自封顶 [PER_PATCH_BUDGET]（2 GB），不设张数上限；超了就按时间从旧到新删。
+ * 裁剪图压成 JPEG 通常 10~30 KB，2 GB 约能存 8~15 万张（连续拍 2~3 个月）。
  */
 object PatchShot {
     private const val INTERVAL_MS = 60_000L
     private const val QUALITY = 70
-    private const val KEEP_PER_PATCH = 240                 // 1 分钟一张 → 4 小时
-    private const val TOTAL_BUDGET = 10L * 1024 * 1024 * 1024   // 10 GB
-    private const val KEEP_DAYS = 3
+    /** 每个区域各自最多占 2 GB，不发张数上限 */
+    private const val PER_PATCH_BUDGET = 2L * 1024 * 1024 * 1024
+    /** 超限时一次删到 90%，避免每次写入都全目录排序 */
+    private const val TRIM_TO = 0.9
 
     private val lastAt = ConcurrentHashMap<String, Long>()
     private val dirOf = ConcurrentHashMap<String, File>()
+    private val used = ConcurrentHashMap<String, Long>()
     private var root: File? = null
-    private var writes = 0
 
     fun init(base: File) {
         root = File(base, "logs")
@@ -38,7 +39,10 @@ object PatchShot {
         return dirOf.getOrPut(p.id) {
             val safe = p.title().replace(Regex("[\\\\/:*?\"<>|\\s]+"), "_").take(20)
                 .ifBlank { "patch" } + "_" + p.id.take(6)
-            File(base, safe).apply { mkdirs() }
+            File(base, safe).apply {
+                mkdirs()
+                used[path] = listFiles()?.sumOf { it.length() } ?: 0L
+            }
         }
     }
 
@@ -63,33 +67,21 @@ object PatchShot {
             tmp.delete()
             return
         }
-        writes++
-        prune(dir)
-        if (writes % 30 == 0) pruneAll()
+        val size = File(dir, name).length()
+        val total = used.merge(dir.path, size, Long::plus) ?: size
+        if (total > PER_PATCH_BUDGET) trim(dir)
     }
 
-    private fun prune(dir: File) {
+    /** 超 2 GB 就按文件名（时间戳）从旧到新删到 90% */
+    private fun trim(dir: File) {
         val files = dir.listFiles { f -> f.isFile && f.name.endsWith(".jpg") }?.sortedBy { it.name } ?: return
-        if (files.size <= KEEP_PER_PATCH) return
-        files.take(files.size - KEEP_PER_PATCH).forEach { it.delete() }
-    }
-
-    private fun pruneAll() {
-        val base = root ?: return
-        val cutoff = System.currentTimeMillis() - KEEP_DAYS * 24 * 3600_000L
-        val all = mutableListOf<File>()
-        base.listFiles()?.forEach { d ->
-            d.listFiles()?.forEach { f ->
-                if (!f.isFile) return@forEach
-                if (f.lastModified() < cutoff) f.delete() else all.add(f)
-            }
-        }
-        var total = all.sumOf { it.length() }
-        if (total <= TOTAL_BUDGET) return
-        for (f in all.sortedBy { it.lastModified() }) {
-            if (total <= TOTAL_BUDGET) break
+        var total = files.sumOf { it.length() }
+        val target = (PER_PATCH_BUDGET * TRIM_TO).toLong()
+        for (f in files) {
+            if (total <= target) break
             total -= f.length()
             f.delete()
         }
+        used[dir.path] = total
     }
 }
