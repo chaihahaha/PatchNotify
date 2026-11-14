@@ -96,7 +96,7 @@ class MainActivity : AppCompatActivity() {
 
     companion object {
         /** 每次发版改这里，屏幕上会显示，便于确认装的是哪个包 */
-        const val BUILD_TAG = "v67-fix"
+        const val BUILD_TAG = "v68-diag"
         private const val REQ_PERMS = 1001
         private const val FRAME_INTERVAL_MS = 250L      // 4 fps
         private const val OCR_BUDGET_MS = 200L
@@ -114,6 +114,7 @@ class MainActivity : AppCompatActivity() {
         run {
             var migrated = false
             for (pt in patches) {
+                pt.mode = "local"                      // 旧版本可能存了 seg7/auto/text
                 if (pt.ask.isNotBlank() || pt.rules.isEmpty()) continue
                 val r = pt.rules.last()
                 val expr = r.expr.trim()
@@ -486,7 +487,19 @@ class MainActivity : AppCompatActivity() {
 
     // ---------------------------------------------------------------- OCR
 
+    /** 包一层：任何未捕获异常都要记下来并把 busy 解开，否则管线会永久卡死 */
     private fun onFrame(proxy: ImageProxy) {
+        try {
+            onFrameInner(proxy)
+        } catch (t: Throwable) {
+            pnLog("onFrame 异常: " + android.util.Log.getStackTraceString(t).take(1200))
+            busy = false
+            localBusy = false
+            runOnUiThread { setStatus("帧处理异常：" + (t.message ?: t.javaClass.simpleName).take(40)) }
+        }
+    }
+
+    private fun onFrameInner(proxy: ImageProxy) {
         val now = SystemClock.elapsedRealtime()
         if (!running) { proxy.close(); return }   // 没点「开始监控」就不做任何推理
         if (busy && now - busyAt > 90000) {
@@ -558,8 +571,8 @@ class MainActivity : AppCompatActivity() {
                 next(); return
             }
 
-            // 本地模式：C++ 直接跑 ONNX，不联网
-            if (p.mode == "local") {
+            // 唯一路径：本地 VLM 判断（mode 字段已无意义，旧配置里可能是 seg7/auto/text）
+            run {
                 if (!hasAllFilesAccess()) {
                     val api = android.os.Build.VERSION.SDK_INT
                     val mgr = if (api >= 30) android.os.Environment.isExternalStorageManager().toString() else "-"
