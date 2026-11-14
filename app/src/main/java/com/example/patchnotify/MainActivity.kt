@@ -70,6 +70,7 @@ class MainActivity : AppCompatActivity() {
     private var frameSeq = 0
     private var lastNullLogAt = 0L
     private var lastFrameAt = 0L
+    private var lastFrameLogAt = 0L
     private var rrIndex = 0
     private val nlState = HashMap<String, Boolean>()     // patch -> 上次是否命中
     private val nlRearmAt = HashMap<String, Long>()      // patch -> 允许再次触发的时间
@@ -96,7 +97,7 @@ class MainActivity : AppCompatActivity() {
 
     companion object {
         /** 每次发版改这里，屏幕上会显示，便于确认装的是哪个包 */
-        const val BUILD_TAG = "v68-diag"
+        const val BUILD_TAG = "v69-frame-log"
         private const val REQ_PERMS = 1001
         private const val FRAME_INTERVAL_MS = 250L      // 4 fps
         private const val OCR_BUDGET_MS = 200L
@@ -501,6 +502,12 @@ class MainActivity : AppCompatActivity() {
 
     private fun onFrameInner(proxy: ImageProxy) {
         val now = SystemClock.elapsedRealtime()
+        // 每 5 秒记一行，确认分析流到底有没有在出帧
+        if (now - lastFrameLogAt > 5000) {
+            lastFrameLogAt = now
+            pnLog("frame 到达 ${proxy.width}x${proxy.height} running=$running " +
+                  "targets=${patches.count { it.monitor }}/${patches.size}")
+        }
         if (!running) { proxy.close(); return }   // 没点「开始监控」就不做任何推理
         if (busy && now - busyAt > 90000) {
             busy = false
@@ -536,7 +543,12 @@ class MainActivity : AppCompatActivity() {
         }
 
         val targets = patches.filter { it.monitor }
-        if (targets.isEmpty()) { bitmap.recycle(); return }
+        if (targets.isEmpty()) {
+            pnLog("没有处于监控状态的区域（共 ${patches.size} 个），请点「设条件」保存一次")
+            bitmap.recycle(); busy = false
+            setStatus("没有在监控的区域：点「设条件」选中区域并保存")
+            return
+        }
 
         busy = true
         busyAt = SystemClock.elapsedRealtime()
@@ -561,7 +573,10 @@ class MainActivity : AppCompatActivity() {
             } catch (e: Exception) {
                 null
             }
-            if (crop == null) { next(); return }
+            if (crop == null) {
+                pnLog("crop 失败 patch=${p.field} rect=${p.x},${p.y},${p.w},${p.h} 整帧=${bitmap.width}x${bitmap.height}")
+                next(); return
+            }
             if (crop.width < 40 || crop.height < 16) {
                 pnLog("crop 太小 ${crop.width}x${crop.height}")
                 // 裁出来太小基本等于画面外，直接判失败，别把垃圾发给模型
@@ -1189,6 +1204,8 @@ class MainActivity : AppCompatActivity() {
 
     private fun toggleRunning() {
         running = !running
+        pnLog("监控 ${if (running) "开始" else "停止"} patches=${patches.size} " +
+              "targets=${patches.count { it.monitor }}")
         binding.btnStartStop.text = if (running) getString(R.string.btn_stop) else getString(R.string.btn_start)
         if (running) {
             setStatus("监控中……（每秒 4 帧 OCR，按 patch 轮询）")
