@@ -31,11 +31,19 @@ object Condition {
         return "看画面回答问题：$cond。只回答「是」或「否」，不要解释。"
     }
 
-    /** 第二段：条件成立后追问的那句，要的是内容而不是是/否 */
-    fun questionPrompt(question: String): String {
-        // 用户写的时候通常自带问号，别再拼一个「。」变成「？。」
-        val q = question.trim().trimEnd('。', '？', '?', '！', '!', '.')
-        return "看画面回答问题：$q。直接给出答案，不要解释。"
+    /**
+     * 第二段：条件成立后追问的那句，要的是内容而不是是/否。
+     * 把第一段的判断条件一起带上 —— 用户常常在那里写清"看哪个区域、什么格式、几位数"，
+     * 第二次推理时模型看不到上下文，准确率会掉。
+     */
+    fun questionPrompt(ask: String): String {
+        val (cond, question) = split(ask)
+        val q = question.trimEnd('。', '？', '?', '！', '!', '.')
+        return if (cond.isBlank()) {
+            "看画面回答问题：$q。直接给出答案，不要解释。"
+        } else {
+            "画面描述：$cond。问题：$q。直接给出答案，不要解释。"
+        }
     }
 
     /**

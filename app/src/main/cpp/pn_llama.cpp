@@ -65,7 +65,7 @@ Java_com_example_patchnotify_NativeLlama_init(JNIEnv* env, jclass, jstring jmode
     if (!g_model) return env->NewStringUTF("ERR:模型加载失败");
 
     llama_context_params cp = llama_context_default_params();
-    cp.n_ctx = 1024;
+    cp.n_ctx = 4096;
     cp.n_batch = 1024;
     cp.n_ubatch = 1024;
     cp.n_threads = nThreads;
@@ -78,9 +78,9 @@ Java_com_example_patchnotify_NativeLlama_init(JNIEnv* env, jclass, jstring jmode
     mparams.use_gpu = false;
     mparams.print_timings = false;
     mparams.flash_attn_type = LLAMA_FLASH_ATTN_TYPE_ENABLED;
-    // 495x173 的框约 75 个图像 token。之前压到 64 会退成 52，首位 0 会偶发读成 9，
-    // 所以放到 128（等于不压缩）。
-    mparams.image_max_tokens = 128;
+    // 不额外限制图像 token 数：0 = 用模型 metadata 里的默认切块，分辨率由原图决定。
+    // 限制这里等于先把画面压小再喂给视觉塔，细节（数码管笔画、小字）直接丢。
+    mparams.image_max_tokens = 0;
     mparams.n_threads = nThreads;
     g_mctx = mtmd_init_from_file(mmprojPath.c_str(), g_model, mparams);
     if (!g_mctx) { releaseAll(); return env->NewStringUTF("ERR:mmproj 加载失败"); }

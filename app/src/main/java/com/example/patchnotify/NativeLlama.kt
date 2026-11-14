@@ -51,13 +51,9 @@ object Vlm {
         allowThink: Boolean = false, openAnswer: Boolean = false
     ): String {
         if (!ready) return "ERR:模型未加载"
-        // 是/否只给 6 个 token；开放式回答给 64；思考模式给 800
-        // （实测思考链能到 500+ token，给 400 会被截断，</think> 不出现，整段思考被当成答案）
-        val budget = when {
-            allowThink -> 800
-            openAnswer -> 64
-            else -> 6
-        }
+        // 不再按回答类型卡 token 数：生成到 EOG / <|im_end|> 自然就停，
+        // 上限只用来兜住跑飞的输出（受 n_ctx=4096 约束）
+        val budget = 2048
         val promptText = if (openAnswer) Condition.questionPrompt(ask) else Condition.prompt(ask)
         val out = NativeLlama.infer(rgb, w, h, promptText, budget, allowThink).trim()
         // 思考没闭合 = 被 maxTok 截断，不能拿去判断
