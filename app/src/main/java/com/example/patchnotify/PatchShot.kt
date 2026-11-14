@@ -19,7 +19,7 @@ object PatchShot {
     private const val INTERVAL_MS = 60_000L
     private const val QUALITY = 70
     private const val KEEP_PER_PATCH = 240                 // 1 分钟一张 → 4 小时
-    private const val TOTAL_BUDGET = 256L * 1024 * 1024    // 256 MB
+    private const val TOTAL_BUDGET = 10L * 1024 * 1024 * 1024   // 10 GB
     private const val KEEP_DAYS = 3
 
     private val lastAt = ConcurrentHashMap<String, Long>()
