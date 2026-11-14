@@ -99,7 +99,7 @@ class MainActivity : AppCompatActivity() {
 
     companion object {
         /** 每次发版改这里，屏幕上会显示，便于确认装的是哪个包 */
-        const val BUILD_TAG = "v74-speak"
+        const val BUILD_TAG = "v75-quiet"
         private const val REQ_PERMS = 1001
         private const val FRAME_INTERVAL_MS = 250L      // 4 fps
         private const val OCR_BUDGET_MS = 200L
@@ -491,12 +491,6 @@ class MainActivity : AppCompatActivity() {
 
     private fun onFrameInner(proxy: ImageProxy) {
         val now = SystemClock.elapsedRealtime()
-        // 每 5 秒记一行，确认分析流到底有没有在出帧
-        if (now - lastFrameLogAt > 5000) {
-            lastFrameLogAt = now
-            pnLog("frame 到达 ${proxy.width}x${proxy.height} running=$running " +
-                  "targets=${patches.count { it.monitor }}/${patches.size}")
-        }
         if (!running) { proxy.close(); return }   // 没点「开始监控」就不做任何推理
         if (busy && now - busyAt > 90000) {
             busy = false
@@ -540,10 +534,6 @@ class MainActivity : AppCompatActivity() {
             return
         }
 
-        if (now - lastTickLogAt > 3000) {
-            lastTickLogAt = now
-            pnLog("开始轮询 targets=${targets.size} 整帧=${bitmap.width}x${bitmap.height} rot=$rot")
-        }
         busy = true
         busyAt = SystemClock.elapsedRealtime()
         val t0 = SystemClock.elapsedRealtime()
@@ -565,7 +555,6 @@ class MainActivity : AppCompatActivity() {
             idx++
             processed++
 
-            pnLog("next 裁图 rect=${p.x},${p.y},${p.w},${p.h} 整帧=${bitmap.width}x${bitmap.height} recycled=${bitmap.isRecycled}")
             val crop = try {
                 cropPatch(bitmap, p, 0)
             } catch (e: Throwable) {
@@ -585,7 +574,6 @@ class MainActivity : AppCompatActivity() {
                 next(); return
             }
 
-            pnLog("next: crop=${crop.width}x${crop.height} patch=${p.field}")
             // 唯一路径：本地 VLM 判断（mode 字段已无意义，旧配置里可能是 seg7/auto/text）
             run {
                 if (!hasAllFilesAccess()) {
@@ -1093,12 +1081,17 @@ class MainActivity : AppCompatActivity() {
             if (prev) nlRearmAt[p.id] = now + REARM_MS
         }
 
-        // 只在显示内容真的变了才重建列表：原来每 400ms 重建一遍，预览跟着抖
+        // 只在判定真的变了才刷界面：每帧重建列表/改状态栏都会挤压布局，拖着预览一起抖
         if (lastShown[p.id] != shown) {
             lastShown[p.id] = shown
-            runOnUiThread { refreshPatchList() }
+            runOnUiThread {
+                refreshPatchList()
+                setStatus("${p.title()}：${shown.take(24)}")
+            }
         }
 
+        pnLog("judge: raw=${raw.take(20)} yes=$yes prev=$prev running=$running alerting=$alerting " +
+              "rearm=${(nlRearmAt[p.id] ?: 0L) - now}ms prompt=${AskRule.prompt(p.ask).take(60)}")
         if (yes == true && !prev && running && !alerting) {
             val canFire = now >= (nlRearmAt[p.id] ?: 0L)
             if (canFire) {
@@ -1108,10 +1101,7 @@ class MainActivity : AppCompatActivity() {
                 triggerAlert(p, text, if (text.isBlank()) 5 else 8, p.title())
             }
         }
-        if (SystemClock.elapsedRealtime() - lastUiAt > 1000) {
-            lastUiAt = SystemClock.elapsedRealtime()
-            setStatus("${p.title()}：$shown")
-        }
+
     }
 
     // ---------------------------------------------------------------- 播报
