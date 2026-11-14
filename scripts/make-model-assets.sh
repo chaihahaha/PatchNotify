@@ -4,39 +4,26 @@
 #   ./scripts/make-model-assets.sh [模型 gguf] [mmproj gguf]
 #
 # 产物：
-#   app/src/main/assets/model/model.gguf.tenz    tenz 压过的模型
-#   app/src/main/assets/mmproj/mmproj.gguf.tenz  mmproj 先量化 Q8_0 再 tenz
+#   app/src/main/assets/model/Qwen3.5-2B-UD-IQ2_M.gguf   直接放原始 gguf
+#   app/src/main/assets/mmproj/mmproj-Q8_0.gguf          mmproj 从 F16 量化到 Q8_0
 #
-# 需要：curl、cmake 编出来的 llama-quantize、tenz（自动下载到 .tenz-build/）
+# 不放 .tenz：IQ2 张量 tenz 压缩不了（实测只省 4.6%），首启还要多写一遍，
+# 不如直接拷 GGUF —— 反正 llama.cpp 只认文件路径，这一份拷贝省不掉。
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-MODEL=${1:-$HOME/hermes-share/ggufs2b/Qwen3.5-2B-Q4_0.gguf}
+MODEL=${1:-$HOME/hermes-share/ggufs2b/Qwen3.5-2B-UD-IQ2_M.gguf}
 MMPROJ=${2:-$HOME/hermes-share/ggufs2b/mmproj-F16.gguf}
 BUILD=.tenz-build
 mkdir -p "$BUILD" app/src/main/assets/model app/src/main/assets/mmproj
 
-if [ ! -x "$BUILD/tenz" ]; then
-  echo "== 拉取 tenz 源码并编译"
-  curl -fsSL https://raw.githubusercontent.com/nsiddiqui248/tenz/main/tenz.c -o "$BUILD/tenz.c"
-  cc -O2 -pthread -ffp-contract=off -o "$BUILD/tenz" "$BUILD/tenz.c" -lm
-fi
-
 QUANT=$(ls "$HOME"/source/llama.cpp/build/bin/llama-quantize 2>/dev/null || true)
 [ -n "$QUANT" ] || { echo "缺少 llama-quantize，先 cmake --build build --target llama-quantize"; exit 1; }
 
+cp "$MODEL" app/src/main/assets/model/$(basename "$MODEL")
 echo "== mmproj F16 -> Q8_0"
-"$QUANT" "$MMPROJ" "$BUILD/mmproj-Q8_0.gguf" Q8_0 "$(sysctl -n hw.ncpu)"
+"$QUANT" "$MMPROJ" app/src/main/assets/mmproj/mmproj-Q8_0.gguf Q8_0 "$(sysctl -n hw.ncpu)"
 
-echo "== tenz 压缩"
-"$BUILD/tenz" c "$MODEL"  app/src/main/assets/model/model.gguf.tenz  -f
-"$BUILD/tenz" c "$BUILD/mmproj-Q8_0.gguf" app/src/main/assets/mmproj/mmproj.gguf.tenz -f
-
-cat <<TXT
-
-== 完成
-模型     $(du -h "$MODEL" | cut -f1) -> $(du -h app/src/main/assets/model/model.gguf.tenz | cut -f1)
-mmproj   $(du -h "$MMPROJ" | cut -f1) -> $(du -h "$BUILD/mmproj-Q8_0.gguf" | cut -f1) -> $(du -h app/src/main/assets/mmproj/mmproj.gguf.tenz | cut -f1)
-
-注意：ModelBundle.kt 里写死了解压后的字节数，换模型要同步改 ITEMS。
-TXT
+ls -lh app/src/main/assets/model app/src/main/assets/mmproj
+echo
+echo "注意：ModelBundle.kt 里写死了解压后的字节数，换模型要同步改 ITEMS。"

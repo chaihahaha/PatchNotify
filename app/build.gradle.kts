@@ -44,9 +44,9 @@ android {
         viewBinding = true
     }
 
-    // .tenz 已经是熵编码后的数据，别让 aapt 再 deflate 一遍
+    // 量化的 gguf 压不动，别让 aapt 白跑一遍 deflate（也避免 >1GB 资产被标记为压缩）
     androidResources {
-        noCompress.add("tenz")
+        noCompress.add("gguf")
     }
 }
 

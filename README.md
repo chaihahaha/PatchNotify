@@ -172,16 +172,21 @@ CPU 版本还带来两个副作用：不占 GPU，相机预览不卡；没有 Vu
 
 ## 免配置安装包（模型打进 APK）
 
-默认 APK 不含权重，用户自己导入模型。想做成装完就能用的版本，把压缩后的模型放进 assets：
+默认 APK 不含权重，用户自己导入模型。想做成装完就能用的版本，把 GGUF 放进 assets：
 
 ```
-app/src/main/assets/model/model.gguf.tenz      Qwen3.5-2B Q4_0，tenz 压后 1049 MiB
-app/src/main/assets/mmproj/mmproj.gguf.tenz    mmproj 量化到 Q8_0 再 tenz，310 MiB
+app/src/main/assets/model/Qwen3.5-2B-UD-IQ2_M.gguf     820 MiB
+app/src/main/assets/mmproj/mmproj-Q8_0.gguf            345 MiB（从 F16 量化，637 → 345）
 ```
 
-- 首次启动时 `ModelBundle` 把资产拷到 `<sdcard>/patchnotify/qwen_2b/`，调 `libtenz.so` 解压，
-  校验字节数后删掉临时文件；两个文件都在就直接跳过。
-- 普通构建的 assets 里没有这些文件，`ModelBundle.bundled()` 返回 false，整段逻辑不执行。
-- 生成资产：`./scripts/make-model-assets.sh`（需要 llama-quantize 和网络拉 tenz 源码）。
-- 代价：APK 约 1.4 GB；安装要先复制进 `/data/app`，首次启动再解压到 sdcard，
-  峰值需要约 3 GB 空闲。
+首次启动时 `ModelBundle` 把资产拷到 `<sdcard>/patchnotify/qwen_2b/`，校验字节数后结束：
+
+- **用户自己放的模型优先**：目录里已经有模型 + mmproj，就完全不动，直接用用户的
+- 目标文件已存在且大小正确 → 跳过，重装/升级不会重复拷 1.2 GB
+- 普通构建的 assets 里没有这些文件，`bundled()` 返回 false，整段逻辑不执行
+- 生成资产：`./scripts/make-model-assets.sh`
+- APK 约 1.2 GB；安装要先复制进 `/data/app`，首次启动再拷一份到 sdcard
+
+为什么不压成 .tenz：IQ2 那种查表量化 tenz 没有模型，820 MiB 只省到 782 MiB（4.6%），
+而 llama.cpp 只接受文件路径、没法直接 mmap APK 里的 asset，拷贝本来就要做一次，
+再用 tenz 只是多写 800 MB 换 38 MB 体积，不值。

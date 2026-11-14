@@ -32,11 +32,13 @@ object Vlm {
         "Qwen3.5-2B-Q4_0.gguf",
         "Qwen3.5-2B-UD-Q3_K_XL.gguf",
         "Qwen3.5-2B-UD-Q4_K_XL.gguf",
-        "Qwen3.5-2B-UD-Q2_K_XL.gguf"
+        "Qwen3.5-2B-UD-Q2_K_XL.gguf",
+        "Qwen3.5-2B-UD-IQ2_M.gguf"          // 安装包自带的那个
     )
     private val MMPROJ_CANDIDATES = listOf(
         "mmproj-F16.gguf",
         "mmproj-BF16.gguf",
+        "mmproj-Q8_0.gguf",                 // 安装包自带的那个
         "mmproj.gguf"
     )
 
