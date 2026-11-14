@@ -25,11 +25,15 @@ object Condition {
     /** 句号后面那句：条件成立时让模型回答的问题 */
     fun questionOf(ask: String) = split(ask).second
 
-    /** 交给模型的完整提示词：封闭问句，只允许回答是/否 */
+    /** 第一段：封闭问句，只允许回答是/否 */
     fun prompt(ask: String): String {
         val cond = conditionOf(ask)
         return "看画面回答问题：$cond。只回答「是」或「否」，不要解释。"
     }
+
+    /** 第二段：条件成立后追问的那句，要的是内容而不是是/否 */
+    fun questionPrompt(question: String): String =
+        "看画面回答问题：${question.trim()}。直接给出答案，不要解释。"
 
     /**
      * 解析模型输出。返回 null = 没读懂（既没说是否）。

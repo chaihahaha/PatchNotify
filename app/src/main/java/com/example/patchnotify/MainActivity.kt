@@ -99,7 +99,7 @@ class MainActivity : AppCompatActivity() {
 
     companion object {
         /** 每次发版改这里，屏幕上会显示，便于确认装的是哪个包 */
-        const val BUILD_TAG = "v85-bundle"
+        const val BUILD_TAG = "v89-qa"
         private const val REQ_PERMS = 1001
         private const val FRAME_INTERVAL_MS = 250L      // 4 fps
         private const val ROUND_BUDGET_MS = 200L
@@ -685,7 +685,8 @@ class MainActivity : AppCompatActivity() {
                             if (q.isNotBlank() && r.trim() == "是" && nlState[p.id] != true) {
                                 val t1 = SystemClock.elapsedRealtime()
                                 val ans = try {
-                                    Vlm.ask(rgb, bw, bh, q, p.think).trim()
+                                    // openAnswer：这句是问答，不是是/否判断
+                                    Vlm.ask(rgb, bw, bh, q, p.think, openAnswer = true).trim()
                                 } catch (e: Throwable) { "" }
                                 pnLog("local: 追问「$q」→ 「$ans」 用时 ${(SystemClock.elapsedRealtime() - t1) / 1000.0}s")
                                 if (ans.isNotBlank() && !ans.startsWith("ERR")) {

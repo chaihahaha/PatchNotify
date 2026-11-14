@@ -46,12 +46,20 @@ object Vlm {
         names.map { File(dir, it) }.firstOrNull { it.exists() }
 
     /** 把一句话条件交给模型，返回它的原话（应是/否） */
-    fun ask(rgb: ByteArray, w: Int, h: Int, ask: String, allowThink: Boolean = false): String {
+    fun ask(
+        rgb: ByteArray, w: Int, h: Int, ask: String,
+        allowThink: Boolean = false, openAnswer: Boolean = false
+    ): String {
         if (!ready) return "ERR:模型未加载"
-        // 不思考只给 6 个 token；思考给 800（实测这条问句的思考链能到 500+ token，
-        // 给 400 会在句子中间被截断，于是 "</think>" 永远不出现，整段思考被当成答案）
-        val budget = if (allowThink) 800 else 6
-        val out = NativeLlama.infer(rgb, w, h, Condition.prompt(ask), budget, allowThink).trim()
+        // 是/否只给 6 个 token；开放式回答给 64；思考模式给 800
+        // （实测思考链能到 500+ token，给 400 会被截断，</think> 不出现，整段思考被当成答案）
+        val budget = when {
+            allowThink -> 800
+            openAnswer -> 64
+            else -> 6
+        }
+        val promptText = if (openAnswer) Condition.questionPrompt(ask) else Condition.prompt(ask)
+        val out = NativeLlama.infer(rgb, w, h, promptText, budget, allowThink).trim()
         // 思考没闭合 = 被 maxTok 截断，不能拿去判断
         if (out.contains("<think>") && !out.contains("</think>")) return "ERR:THINK_TRUNC"
         return out
