@@ -2,7 +2,7 @@
 
 Android 端实时 OCR 监控与阈值提醒。摄像头画面里框选一块区域，循环识别其中的数字/文字，按规则触发提示音或语音播报。
 
-识别**完全在手机本地**完成：C++ 通过 ONNX Runtime 直接跑 Qwen2-VL 2B（q4），不联网、不依赖电脑。
+识别**完全在手机本地**完成：C++ 通过 llama.cpp 跑 Qwen3.5-2B（GGUF Q4_0）多模态模型，不联网、不依赖电脑。
 
 ## 功能
 
@@ -13,20 +13,21 @@ Android 端实时 OCR 监控与阈值提醒。摄像头画面里框选一块区�
 - 首次读数只建立基线，开机时已经超标的阈值不会立刻报警
 - 播报内容可省略，只播提示音；播报时长可设
 - 阈值、播报、秒数的文本格式：`字段>191 好了 5`（兼容旧写法 `字段>191=>好了=>5`）
+- 帧间指纹缓存：画面几乎没变时直接复用上次读数，不起推理
 
 ## 目录
 
 ```
 app/src/main/java/com/example/patchnotify/
   MainActivity.kt        相机、识别循环、规则触发、TTS
+  NativeLlama.kt         JNI 入口 + 模型文件自动发现
   ConditionParser.kt     条件 DSL 与规则文本解析
   SegmentReader.kt       七段数码管解码
   Config.kt              Patch / Rule 数据模型与持久化
-  NativeOcr.kt           JNI 入口
 app/src/main/cpp/
-  pn_ocr.cpp             本地推理全流程（smart_resize → patchify → vision → embed → 自回归解码）
-  prompt_tokens.h        四种识别类型的固定 prompt token id
-  CMakeLists.txt
+  pn_llama.cpp           llama.cpp/mtmd 的 JNI 薄封装（图像 → 多模态 prompt → 贪心解码）
+scripts/
+  build-llama-android.sh 交叉编译 arm64-v8a 的 llama.cpp + JNI 层
 ```
 
 ## 构建
@@ -35,68 +36,95 @@ app/src/main/cpp/
 
 - Android SDK，NDK **27.2.12479018**
 - CMake 3.22.1
-- ONNX Runtime Android **1.32.0**（q4 权重依赖 `GatherBlockQuantized.bits`，1.22 会报 `Unrecognized attribute`）
+- llama.cpp 源码（`~/source/llama.cpp`），需要包含 `tools/mtmd`
+- `brew install opencl-headers` **不需要**（纯 CPU 构建用不到）
 
-仓库不包含二进制，需要自己放三处：
-
-1. **ORT 头文件** → `app/src/main/cpp/thirdparty/include/onnxruntime/`
-2. **ORT 动态库** → `app/src/main/jniLibs/arm64-v8a/libonnxruntime.so`
-3. **模型**（见下节）
+仓库不包含二进制（`*.so` 与 `app/src/main/jniLibs/` 已在 `.gitignore` 里），自己编一次：
 
 ```bash
-./gradlew testDebugUnitTest assembleDebug
+LLAMA_DIR=~/source/llama.cpp ./scripts/build-llama-android.sh
+./gradlew assembleDebug
+```
+
+脚本会编出 `libggml-base / libggml-cpu / libggml / libllama / libmtmd / libpnllama.so`
+并拷进 `app/src/main/jniLibs/arm64-v8a/`。
+
+### 编译开关（缺一个就慢数倍）
+
+| 开关 | 作用 |
+|---|---|
+| `GGML_CPU_ARM_ARCH=armv8.2-a+dotprod+fp16+i8mm+bf16` | **最关键**。交叉编译默认按 armv8-a 基线编，量化 GEMV 退回标量路径 |
+| `GGML_CPU_KLEIDIAI=ON` | ARM 官方微内核（i8mm/SVE 矩阵乘） |
+| `GGML_LTO=ON` | 链接时优化 |
+| `GGML_OPENMP=OFF` | Android 上没有可用 OpenMP 运行时 |
+| `GGML_VULKAN=OFF` / `GGML_OPENCL=OFF` | 见下方「为什么不走 GPU」 |
+
+校验是否生效：
+
+```bash
+llvm-objdump -d app/src/main/jniLibs/arm64-v8a/libggml-cpu.so | grep -cE '\bsdot\b|\bsmmla\b'
+# 应为数百条；为 0 说明 ARM 优化没进去
 ```
 
 ## 模型从哪来
 
-模型出处：仓库 <https://github.com/jingsongliujing/OnnxOCR>，
-权重放在 ModelScope：<https://www.modelscope.cn/models/supersong/qwen2bonnx>
-
-模型根目录 `models/qwen_2b/`，本项目只用到其中的 `onnx/` 子目录。
+权重是 `Qwen/Qwen3.5-2B` 的 GGUF 量化版（原 ONNX 版同样是这个模型的导出）。
 
 ```bash
-# 方式一：modelscope 命令行
-pip install modelscope
-modelscope download --model supersong/qwen2bonnx \
-    models/qwen_2b/onnx --local_dir ./qwen_2b
-
-# 方式二：git（需要 git-lfs，仓库约 2.2 GB）
-git lfs install
-git clone https://www.modelscope.cn/supersong/qwen2bonnx.git
+# 模型 ~1.1 GB
+curl -L -o Qwen3.5-2B-Q4_0.gguf \
+  https://hf-mirror.com/unsloth/Qwen3.5-2B-GGUF/resolve/main/Qwen3.5-2B-Q4_0.gguf
+# 视觉编码器 ~637 MB
+curl -L -o mmproj-F16.gguf \
+  https://hf-mirror.com/unsloth/Qwen3.5-2B-GGUF/resolve/main/mmproj-F16.gguf
 ```
 
-需要的**只有这 6 个文件**（每个 `.onnx` 都必须和同名 `.onnx_data` 放在同一目录）：
+放到手机任意目录（例如 `/storage/emulated/0/patchnotify/qwen_2b/`），然后在
+「设条件 → 选择文件夹」里指过去。
+
+模型文件名按优先级自动发现，想测别的量化就把那个文件改名成 **`model.gguf`** 丢进同一目录：
 
 ```
-vision_encoder_fp16.onnx        345 KB
-vision_encoder_fp16.onnx_data   637 MB
-embed_tokens_q4.onnx            857 B
-embed_tokens_q4.onnx_data       311 MB
-decoder_model_merged_q4.onnx    866 KB
-decoder_model_merged_q4.onnx_data  1.13 GB
+model.gguf                        ← 最高优先级
+Qwen3.5-2B-Q4_0.gguf
+Qwen3.5-2B-UD-Q3_K_XL.gguf
+Qwen3.5-2B-UD-Q4_K_XL.gguf
+Qwen3.5-2B-UD-Q2_K_XL.gguf
+Qwen-3.5-0.8B-OCR.*.gguf          ← 0.8B 精度不够，会把首位 0 读成 9
 ```
 
-放到手机：
+mmproj 侧会找 `mmproj-F16.gguf` / `mmproj-BF16.gguf` / `mmproj.gguf`。
 
-```
-/storage/emulated/0/patchnotify/qwen_2b/onnx/
-```
+### 量化选择
 
-也可以在「设条件 → 选择文件夹 / 导入模型到 App 内」里指到别的位置。
+2bit（`IQ2_M` / `Q2_K_XL`）在这类数码管上会稳定读错末两位，**Q3_K_XL 是精度下限**；
+`Q4_0` 与 `Q3_K_XL` 准确率相当，但 Q4_0 有手写 ARM 重排内核，CPU 上更快，因此作为默认。
 
-### tokenizer / chat_template 需要吗
+## 性能
 
-**不需要，也不建议放。** 模型根目录里的 `tokenizer.json`（19 MB）、`tokenizer_config.json`、
-`chat_template.jinja`、`config.json`、`generation_config.json` 都不参与手机端推理：
+天玑 9300（Cortex-X4×4 + A720×4）实测，495×173 的框：
 
-- **输入侧**：四种识别类型的完整 prompt 早已离线导出成 token id，写死在
-  `app/src/main/cpp/prompt_tokens.h`，不需要在手机上跑 BPE
-- **输出侧**：当前实现按 id 直接映射数字（`15..24` → `0..9`，`13` → `.`），
-  其他 id 一律丢弃，所以**只有「识别内容：数字」能出结果**；
-  中文 / 英文 / 混合三种模式目前只会返回空串
+| 后端 | 图像块 | 文本块 | decode 6 token | 合计 |
+|---|---|---|---|---|
+| Vulkan | 3.18 s | 1.60 s | 1.45 s | 6.2 s |
+| **CPU + KleidiAI** | 3.9 s | 0.23 s | 0.29 s | **4.5 s** |
 
-要在手机上支持中英文输出，需要引入 `tokenizer.json` 并实现 BPE 解码（约 19 MB + 一套解码器），
-目前没有做。
+CPU 版本还带来两个副作用：不占 GPU，相机预览不卡；没有 Vulkan 的每次计算图重建开销。
+
+### 线程数
+
+默认取 `min(4, 核心数)`——只有 4 个大核，线程数超过大核数会被小核拖住
+（实测 8 线程比 4 线程慢 2.5 倍）。
+
+想调就在模型目录放一个 `threads.txt`，写一个数字（1–8），重启监控生效。
+
+### 为什么不走 GPU
+
+- **Vulkan**：能跑，但 Mali/Immortalis 上每个 `llama_decode` 的算子派发开销极高，
+  逐 token 解码比 CPU 慢 5 倍；每帧还有约 1.6 s 的计算图重建
+- **OpenCL**：`libOpenCL.so` 在 `/vendor/lib64/` 下，普通 App 的 linker namespace 访问不到，
+  除非 root 或改 SELinux，否则用不了
+- **Hexagon NPU**：需要高通 Hexagon SDK 编 DSP 侧 skel 库并经 adb 部署，装不进普通 APK
 
 ## 权限
 
@@ -107,6 +135,8 @@ decoder_model_merged_q4.onnx_data  1.13 GB
 
 ## 说明
 
-- 输入尺寸不写死：按框选区域实际大小做 32 对齐的 smart_resize，图像 token 超过上限时直接报错提示用户缩小框，不静默缩图
-- NNAPI 只挂 vision encoder（decoder 每步 KV cache shape 变化，NNAPI 无法编译）；运行期失败会自动退回 CPU
+- 输入尺寸不写死：按框选区域实际大小交给 mtmd 处理，`image_max_tokens` 上限 128
+  （与旧 ONNX 版 smart_resize 产出的 token 数对齐；压到 64 会把首位 0 读成 9）
+- 关掉了 Qwen3.5 的 thinking：在 assistant 开头预填空 think 块，输出从数百 token 降到 6 个
+- 日志写在模型目录的父目录：`pnocr.log`（Kotlin 侧）和 `pnocr_cpp.log`（C++ 侧）
 - 阈值、秒数等参数保存在 SharedPreferences / 应用私有 JSON
