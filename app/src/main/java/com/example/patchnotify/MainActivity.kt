@@ -99,7 +99,7 @@ class MainActivity : AppCompatActivity() {
 
     companion object {
         /** 每次发版改这里，屏幕上会显示，便于确认装的是哪个包 */
-        const val BUILD_TAG = "v75-quiet"
+        const val BUILD_TAG = "v76-think"
         private const val REQ_PERMS = 1001
         private const val FRAME_INTERVAL_MS = 250L      // 4 fps
         private const val OCR_BUDGET_MS = 200L
@@ -682,6 +682,10 @@ class MainActivity : AppCompatActivity() {
                             } else {
                                 val t0 = SystemClock.elapsedRealtime()
                                 r = NativeOcr.ocrPrompt(rgb, bw, bh, p.ask, p.think)
+                                if (r.startsWith("ERR:THINK_TRUNC")) {
+                                    pnLog("local: 思考被截断，改用不思考重跑一次")
+                                    r = NativeOcr.ocrPrompt(rgb, bw, bh, p.ask, false)
+                                }
                                 if (r.startsWith("ERR:TOOBIG:")) {
                                     val a = r.split(":")
                                     r = "框太大：${a.getOrNull(2)} 个图像token（上限 ${a.getOrNull(3)}），请把框划小一点"
@@ -691,7 +695,7 @@ class MainActivity : AppCompatActivity() {
                                 resultAtByPatch[p.id] = SystemClock.elapsedRealtime()
                                 val dt = (SystemClock.elapsedRealtime() - t0) / 1000.0
                                 pnLog("local: ocr → 「$r」 用时 %.1fs".format(dt))
-                                runOnUiThread { setStatus("本地 ${String.format("%.1f", dt)}s → 「$r」") }
+                                runOnUiThread { setStatus("${String.format("%.1f", dt)}s → ${r.take(20)}") }
                             }
 
                             // 条件成立且是「否→是」的跃变时，再把句号后的问题问一遍，答案拿去播报
@@ -1090,7 +1094,7 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        pnLog("judge: raw=${raw.take(20)} yes=$yes prev=$prev running=$running alerting=$alerting " +
+        pnLog("judge: raw=${raw.replace("\n", " ").take(20)} yes=$yes prev=$prev running=$running alerting=$alerting " +
               "rearm=${(nlRearmAt[p.id] ?: 0L) - now}ms prompt=${AskRule.prompt(p.ask).take(60)}")
         if (yes == true && !prev && running && !alerting) {
             val canFire = now >= (nlRearmAt[p.id] ?: 0L)

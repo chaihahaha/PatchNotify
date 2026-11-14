@@ -96,9 +96,13 @@ object NativeOcr {
     /** 自然语言规则：返回模型原话（应是/否） */
     fun ocrPrompt(rgb: ByteArray, w: Int, h: Int, ask: String, allowThink: Boolean = false): String {
         if (!ready) return "ERR:模型未加载"
-        // 不思考时只留 6 个 token；思考时给 400（实测思考链约 250~350 token）
-        val budget = if (allowThink) 400 else 6
-        return NativeLlama.ocr(rgb, w, h, AskRule.prompt(ask), budget, allowThink).trim()
+        // 不思考只给 6 个 token；思考给 800（实测这条问句的思考链能到 500+ token，
+        // 给 400 会在句子中间被截断，于是 "</think>" 永远不出现，整段思考被当成答案）
+        val budget = if (allowThink) 800 else 6
+        val out = NativeLlama.ocr(rgb, w, h, AskRule.prompt(ask), budget, allowThink).trim()
+        // 思考没闭合 = 被 maxTok 截断，不能拿去判断
+        if (out.contains("<think>") && !out.contains("</think>")) return "ERR:THINK_TRUNC"
+        return out
     }
 
     private fun extractDigits(raw: String): String {
