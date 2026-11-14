@@ -92,17 +92,17 @@ class MainActivity : AppCompatActivity() {
         android.os.Environment.getExternalStorageDirectory(), "patchnotify/qwen_2b"
     ).absolutePath
 
-    /** 选一张照片，跑一遍同样的预处理 + OCR，用来判断相机读不出来到底是哪一环的问题 */
+    /** 选一张照片跑一遍同样的判断，用来定位相机侧的问题 */
     private val pickImage = registerForActivityResult(
         androidx.activity.result.contract.ActivityResultContracts.GetContent()
     ) { uri -> if (uri != null) testWithImage(uri) }
 
     companion object {
         /** 每次发版改这里，屏幕上会显示，便于确认装的是哪个包 */
-        const val BUILD_TAG = "v80-2g"
+        const val BUILD_TAG = "v81-clean"
         private const val REQ_PERMS = 1001
         private const val FRAME_INTERVAL_MS = 250L      // 4 fps
-        private const val OCR_BUDGET_MS = 200L
+        private const val ROUND_BUDGET_MS = 200L
         private const val REARM_MS = 8000L              // 条件恢复后至少等这么久才允许再报
     }
 
@@ -432,7 +432,7 @@ class MainActivity : AppCompatActivity() {
         }, ContextCompat.getMainExecutor(this))
     }
 
-    // ---------------------------------------------------------------- OCR
+    // ----------------------------------------------------------- 判断循环
 
     /** 包一层：任何未捕获异常都要记下来并把 busy 解开，否则管线会永久卡死 */
     private fun onFrame(proxy: ImageProxy) {
@@ -501,7 +501,7 @@ class MainActivity : AppCompatActivity() {
             try {
 
             if (processed >= targets.size ||
-                SystemClock.elapsedRealtime() - t0 > OCR_BUDGET_MS) {
+                SystemClock.elapsedRealtime() - t0 > ROUND_BUDGET_MS) {
                 if (processed == 0) pnLog("next() 直接返回：budget=${SystemClock.elapsedRealtime() - t0}ms")
                 bitmap.recycle()
                 busy = false
@@ -582,7 +582,7 @@ class MainActivity : AppCompatActivity() {
                     try {
                         if (!localReady) {
                             pnLog("local: 开始加载模型…")
-                            val st = NativeOcr.probe(localModelDir)
+                            val st = Vlm.probe(localModelDir)
                             pnLog("local: probe → $st")
                             localReady = st == "ok" || st.startsWith("ok ")
                             if (!localReady) {
@@ -638,10 +638,10 @@ class MainActivity : AppCompatActivity() {
                                 pnLog("local: 画面未变化，复用「$r」")
                             } else {
                                 val t0 = SystemClock.elapsedRealtime()
-                                r = NativeOcr.ocrPrompt(rgb, bw, bh, p.ask, p.think)
+                                r = Vlm.ask(rgb, bw, bh, p.ask, p.think)
                                 if (r.startsWith("ERR:THINK_TRUNC")) {
                                     pnLog("local: 思考被截断，改用不思考重跑一次")
-                                    r = NativeOcr.ocrPrompt(rgb, bw, bh, p.ask, false)
+                                    r = Vlm.ask(rgb, bw, bh, p.ask, false)
                                 }
                                 if (r.startsWith("ERR:TOOBIG:")) {
                                     val a = r.split(":")
@@ -651,7 +651,7 @@ class MainActivity : AppCompatActivity() {
                                 resultByPatch[p.id] = r
                                 resultAtByPatch[p.id] = SystemClock.elapsedRealtime()
                                 val dt = (SystemClock.elapsedRealtime() - t0) / 1000.0
-                                pnLog("local: ocr → 「$r」 用时 %.1fs".format(dt))
+                                pnLog("local: 判定 → 「$r」 用时 %.1fs".format(dt))
                                 runOnUiThread { setStatus("${String.format("%.1f", dt)}s → ${r.take(20)}") }
                             }
 
@@ -666,7 +666,7 @@ class MainActivity : AppCompatActivity() {
                             if (q.isNotBlank() && r.trim() == "是" && nlState[p.id] != true) {
                                 val t1 = SystemClock.elapsedRealtime()
                                 val ans = try {
-                                    NativeOcr.ocrPrompt(rgb, bw, bh, q, p.think).trim()
+                                    Vlm.ask(rgb, bw, bh, q, p.think).trim()
                                 } catch (e: Throwable) { "" }
                                 pnLog("local: 追问「$q」→ 「$ans」 用时 ${(SystemClock.elapsedRealtime() - t1) / 1000.0}s")
                                 if (ans.isNotBlank() && !ans.startsWith("ERR")) r = "是|" + ans
@@ -727,7 +727,7 @@ class MainActivity : AppCompatActivity() {
                         Bitmap.createScaledBitmap(bmp0, (bmp0.width * sc).toInt(), (bmp0.height * sc).toInt(), true)
                     else bmp0
                     if (!localReady) {
-                        val st = NativeOcr.probe(resolveModelDir().also { localModelDir = it })
+                        val st = Vlm.probe(resolveModelDir().also { localModelDir = it })
                         localReady = st == "ok" || st.startsWith("ok ")
                         if (!localReady) return@withContext "ERR:$st"
                     }
@@ -741,7 +741,7 @@ class MainActivity : AppCompatActivity() {
                         rgb[i * 3 + 1] = ((c shr 8) and 0xFF).toByte()
                         rgb[i * 3 + 2] = (c and 0xFF).toByte()
                     }
-                    "OK:" + w + "x" + h + "\u0001" + NativeOcr.ocrPrompt(rgb, w, h, "读出图中数字", false)
+                    "OK:" + w + "x" + h + "\u0001" + Vlm.ask(rgb, w, h, "读出图中数字", false)
                 } catch (e: Exception) {
                     "ERR:" + e.message
                 }
@@ -899,8 +899,8 @@ class MainActivity : AppCompatActivity() {
     /** 直接在屏幕上显示日志尾部，避免来回复制文件拿到旧内容 */
     private fun showLog() {
         val sb = StringBuilder()
-        for (src in listOf(java.io.File(filesDir, "pnocr.log"),
-                           java.io.File(logDir(), "pnocr.log"))) {
+        for (src in listOf(java.io.File(filesDir, "app.log"),
+                           java.io.File(logDir(), "app.log"))) {
             val alive = if (src.isFile) {
                 java.text.SimpleDateFormat("MM-dd HH:mm:ss", java.util.Locale.US)
                     .format(java.util.Date(src.lastModified()))
@@ -928,24 +928,26 @@ class MainActivity : AppCompatActivity() {
             .show()
     }
 
-    /** 诊断日志：写 logcat + patchnotify/pnocr.log（模型目录的上一层） */
+    /** 诊断日志：写 logcat + patchnotify/app.log（模型目录的上一层） */
     private fun logDir(): String = java.io.File(localModelDir).parent ?: localModelDir
     private fun pnLog(msg: String) {
-        android.util.Log.i("pnocr", msg)
+        android.util.Log.i("PatchNotify", msg)
         try {
-            val f = java.io.File(logDir(), "pnocr.log")
+            val f = java.io.File(logDir(), "app.log")
             f.parentFile?.mkdirs()
             val ts = java.text.SimpleDateFormat("HH:mm:ss.SSS", java.util.Locale.US)
                 .format(java.util.Date())
             f.appendText("$ts $msg\n")
         } catch (e: Throwable) { }
         try {
-            runOnUiThread {
-                binding.buildText.text = "PatchNotify $BUILD_TAG · " + msg.take(48)
+            val nowMs = android.os.SystemClock.elapsedRealtime()
+            if (nowMs - lastBarAt > 2000) {
+                lastBarAt = nowMs
+                runOnUiThread { binding.buildText.text = "PatchNotify $BUILD_TAG · " + msg.take(40) }
             }
         } catch (e: Throwable) { }
         try {
-            val g = java.io.File(filesDir, "pnocr.log")
+            val g = java.io.File(filesDir, "app.log")
             val ts = java.text.SimpleDateFormat("HH:mm:ss.SSS", java.util.Locale.US)
                 .format(java.util.Date())
             g.appendText("$ts $msg\n")
@@ -953,6 +955,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     /** 本进程已经确认能写 /sdcard 一次之后就不再重复探测 */
+    private var lastBarAt = 0L
     private var storageOk = false
 
     private fun hasAllFilesAccess(): Boolean {
@@ -1176,7 +1179,7 @@ class MainActivity : AppCompatActivity() {
               "targets=${patches.count { it.monitor }}")
         binding.btnStartStop.text = if (running) getString(R.string.btn_stop) else getString(R.string.btn_start)
         if (running) {
-            setStatus("监控中……（每秒 4 帧 OCR，按 patch 轮询）")
+            setStatus("监控中 · 每 0.25 秒取一帧，逐个区域判断")
         } else {
             alerting = false
             alertJob?.cancel()

@@ -18,32 +18,28 @@ object NativeLlama {
 
     external fun setLogPath(path: String)
     external fun init(modelPath: String, mmprojPath: String, nThreads: Int): String
-    external fun ocr(rgb: ByteArray, w: Int, h: Int, prompt: String, maxTok: Int,
+    external fun infer(rgb: ByteArray, w: Int, h: Int, prompt: String, maxTok: Int,
                      allowThink: Boolean): String
     external fun release()
 }
 
-object NativeOcr {
+object Vlm {
 
     private var ready = false
     private var modelDirCached = ""
     var lastModelName = ""
 
-    // 优先 2B（精度够），找不到再退 0.8B
+    // 实测 0.8B 无论怎么量化都会读错首位，只认 2B
     private val MODEL_CANDIDATES = listOf(
         "model.gguf",              // 想测哪个量化，就把那个文件改名成 model.gguf，优先级最高
         "Qwen3.5-2B-Q4_0.gguf",
         "Qwen3.5-2B-UD-Q3_K_XL.gguf",
         "Qwen3.5-2B-UD-Q4_K_XL.gguf",
-        "Qwen3.5-2B-UD-Q2_K_XL.gguf",
-        "Qwen-3.5-0.8B-OCR.Q8_0.gguf",
-        "Qwen-3.5-0.8B-OCR.IQ4_XS.gguf",
-        "Qwen-3.5-0.8B-OCR.gguf"
+        "Qwen3.5-2B-UD-Q2_K_XL.gguf"
     )
     private val MMPROJ_CANDIDATES = listOf(
         "mmproj-F16.gguf",
         "mmproj-BF16.gguf",
-        "Qwen-3.5-0.8B-OCR.mmproj-f16.gguf",
         "mmproj.gguf"
     )
 
@@ -51,12 +47,12 @@ object NativeOcr {
         names.map { File(dir, it) }.firstOrNull { it.exists() }
 
     /** 自然语言规则：返回模型原话（应是/否） */
-    fun ocrPrompt(rgb: ByteArray, w: Int, h: Int, ask: String, allowThink: Boolean = false): String {
+    fun ask(rgb: ByteArray, w: Int, h: Int, ask: String, allowThink: Boolean = false): String {
         if (!ready) return "ERR:模型未加载"
         // 不思考只给 6 个 token；思考给 800（实测这条问句的思考链能到 500+ token，
         // 给 400 会在句子中间被截断，于是 "</think>" 永远不出现，整段思考被当成答案）
         val budget = if (allowThink) 800 else 6
-        val out = NativeLlama.ocr(rgb, w, h, AskRule.prompt(ask), budget, allowThink).trim()
+        val out = NativeLlama.infer(rgb, w, h, AskRule.prompt(ask), budget, allowThink).trim()
         // 思考没闭合 = 被 maxTok 截断，不能拿去判断
         if (out.contains("<think>") && !out.contains("</think>")) return "ERR:THINK_TRUNC"
         return out
@@ -68,7 +64,7 @@ object NativeOcr {
         if (model == null) return "ERR:缺少模型 " + MODEL_CANDIDATES[0]
         if (mmproj == null) return "ERR:缺少 mmproj " + MMPROJ_CANDIDATES[0]
 
-        val logFile = File(File(dir).parentFile ?: File(dir), "pnocr_cpp.log")
+        val logFile = File(File(dir).parentFile ?: File(dir), "native.log")
         NativeLlama.setLogPath(logFile.absolutePath)
         // 大核只有 4 个（X4×4 + A720×4），线程数超过大核数会让每个算子都被小核拖住
         var threads = Runtime.getRuntime().availableProcessors().coerceAtMost(4)

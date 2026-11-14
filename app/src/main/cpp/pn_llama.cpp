@@ -1,4 +1,4 @@
-// llama.cpp + mtmd 的 JNI 薄封装：初始化一次，之后每帧只做一次 ocr() 调用。
+// llama.cpp + mtmd 的 JNI 薄封装：初始化一次，之后每帧只做一次推理。
 #include <jni.h>
 #include <android/log.h>
 #include <mutex>
@@ -98,7 +98,7 @@ Java_com_example_patchnotify_NativeLlama_setLogPath(JNIEnv* env, jclass, jstring
 
 // rgb: w*h*3 字节；返回模型原始输出（已去掉 <think> 段）
 extern "C" JNIEXPORT jstring JNICALL
-Java_com_example_patchnotify_NativeLlama_ocr(JNIEnv* env, jclass, jbyteArray jrgb,
+Java_com_example_patchnotify_NativeLlama_infer(JNIEnv* env, jclass, jbyteArray jrgb,
                                              jint w, jint h, jstring jprompt, jint maxTok,
                                              jboolean allowThink) {
     std::lock_guard<std::mutex> lk(g_mu);
