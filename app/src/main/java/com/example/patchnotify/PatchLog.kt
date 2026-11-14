@@ -165,8 +165,8 @@ object PatchLog {
         append("# patch=").append(p.title())
         append(" id=").append(p.id)
         append(" rect=").append(String.format(Locale.US, "%.4f,%.4f,%.4f,%.4f", p.x, p.y, p.w, p.h))
-        append(" mode=").append(p.mode).append(" kind=").append(p.kind).append(" pick=").append(p.pick)
-        append(" rules=").append(p.rules.joinToString(" | ") { it.expr })
+        append(" ask=").append(p.ask)
+        append(" think=").append(p.think)
         append('\n')
     }
 

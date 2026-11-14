@@ -5,96 +5,61 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.util.UUID
 
-/** 一条报警规则：条件 + 播报内容 + 播报时长（秒） */
-data class Rule(
-    var expr: String = "",
-    var speech: String = "",
-    var seconds: Int = 5
-) {
-    fun toJson(): JSONObject = JSONObject().apply {
-        put("expr", expr)
-        put("speech", speech)
-        put("seconds", seconds)
-    }
-
-    companion object {
-        fun fromJson(o: JSONObject) = Rule(
-            expr = o.optString("expr", ""),
-            speech = o.optString("speech", ""),
-            seconds = o.optInt("seconds", 5).coerceIn(1, 120)
-        )
-    }
-}
-
 /**
  * 一个监控区域（patch）。
  * rect 为归一化坐标（0..1），相对于预览画面。
  */
 data class Patch(
     val id: String = UUID.randomUUID().toString(),
-    var name: String = "",
-    var field: String = "",
     var x: Float = 0f,
     var y: Float = 0f,
     var w: Float = 0f,
     var h: Float = 0f,
     var monitor: Boolean = true,
-    /** 多条规则，按"越靠后越严重"理解：同时命中多条时用最后一条 */
-    var rules: MutableList<Rule> = mutableListOf(),
-    /** 区域里有多个数字时取哪个：max / first / last */
-    var pick: String = "max",
-    /** 识别方式：local（手机本地 Qwen，默认）/ auto（先数码管后退回 ML Kit）/ seg7 / text */
-    var mode: String = "local",
-    /** 识别内容：num（数字）/ cn（中文）/ en（英文）/ mix（混合） */
-    var kind: String = "num",
-    /** 自然语言规则："条件句。命中时播报的话"。VLM 只回答是/否 */
+    /** 一句话规则：「条件。条件成立后要问的问题（可选）」。VLM 只回答是/否 */
     var ask: String = "",
-    /** 允许模型先思考再回答（慢 ~10s，开放式条件才需要） */
+    /** 允许模型先思考再回答（慢，开放条件才需要） */
     var think: Boolean = false
 ) {
     fun toJson(): JSONObject = JSONObject().apply {
         put("id", id)
-        put("name", name)
-        put("field", field)
         put("x", x.toDouble()); put("y", y.toDouble())
         put("w", w.toDouble()); put("h", h.toDouble())
         put("monitor", monitor)
-        put("pick", pick)
-        put("mode", mode)
-        put("kind", kind)
         put("ask", ask)
         put("think", think)
-        val arr = JSONArray()
-        rules.forEach { arr.put(it.toJson()) }
-        put("rules", arr)
     }
 
     companion object {
         fun fromJson(o: JSONObject): Patch {
-            val rules = mutableListOf<Rule>()
-            o.optJSONArray("rules")?.let { arr ->
-                for (i in 0 until arr.length()) rules.add(Rule.fromJson(arr.getJSONObject(i)))
-            }
-            // 兼容旧配置：单个 expr/speech 迁移成一条规则
-            val legacyExpr = o.optString("expr", "")
-            if (rules.isEmpty() && legacyExpr.isNotBlank()) {
-                rules.add(Rule(legacyExpr, o.optString("speech", ""), 5))
+            var ask = o.optString("ask", "")
+            // 兼容旧配置：`>6600 好了 5` 这种 DSL 或 rules 数组，转成一句话
+            if (ask.isBlank()) {
+                val rules = o.optJSONArray("rules")
+                val last = if (rules != null && rules.length() > 0) rules.getJSONObject(rules.length() - 1) else null
+                val expr = (last?.optString("expr") ?: o.optString("expr", "")).trim()
+                val speech = last?.optString("speech") ?: o.optString("speech", "")
+                if (expr.isNotBlank()) {
+                    val cond = when {
+                        expr.startsWith("~") -> expr.removePrefix("~").trim()
+                        Regex("^.+?>\\s*(\\d+)$").find(expr) != null ->
+                            "读数是否已经超过 " + Regex("^.+?>\\s*(\\d+)$").find(expr)!!.groupValues[1]
+                        Regex("^.+?<\\s*(\\d+)$").find(expr) != null ->
+                            "读数是否已经低于 " + Regex("^.+?<\\s*(\\d+)$").find(expr)!!.groupValues[1]
+                        else -> "画面是否满足 $expr"
+                    }
+                    ask = if (speech.isBlank()) cond else "$cond。$speech"
+                }
             }
             return Patch(
                 id = o.optString("id", UUID.randomUUID().toString()),
-                name = o.optString("name", ""),
-                field = o.optString("field", ""),
                 x = o.optDouble("x", 0.0).toFloat(),
                 y = o.optDouble("y", 0.0).toFloat(),
                 w = o.optDouble("w", 0.0).toFloat(),
                 h = o.optDouble("h", 0.0).toFloat(),
                 monitor = o.optBoolean("monitor", true),
-                rules = rules,
-                pick = o.optString("pick", "max"),
-                mode = o.optString("mode", "local"),
-                kind = o.optString("kind", "num"),
-            ask = o.optString("ask", ""),
-            think = o.optBoolean("think", false)
+                ask = ask,
+                think = o.optBoolean("think", false)
             )
         }
     }
@@ -123,27 +88,8 @@ object ConfigStore {
     }
 }
 
-/** 每帧的识别结果：raw 是 OCR 原文，value 是从中取出的那个数 */
-data class PatchRead(val patchId: String, val raw: String, val value: Double?, val at: Long)
+/** 每个区域最近一次的判定结果 */
+data class PatchRead(val patchId: String, val raw: String, val at: Long)
 
-/**
- * 把所有 patch 的当前值拼成一个 JSON 对象：每个 patch 对应一个域。
- */
-object ResultJson {
-    fun build(patches: List<Patch>, reads: Map<String, PatchRead>, hits: Set<String>): JSONObject {
-        val o = JSONObject()
-        for (p in patches) {
-            val key = p.field.ifBlank { p.name.ifBlank { p.id.take(6) } }
-            val v = reads[p.id]?.value
-            if (v != null) o.put(key, v) else o.put(key, reads[p.id]?.raw ?: "")
-        }
-        o.put("_triggered", JSONArray(hits.toList()))
-        return o
-    }
-}
-
-/** 界面上显示的名字：用户那句判断条件的前 10 个字（没写条件时退回旧字段名） */
-fun Patch.title(): String {
-    val t = AskRule.conditionOf(ask).take(10)
-    return t.ifBlank { field.ifBlank { name.ifBlank { "区域" } } }
-}
+/** 界面上显示的名字：判断条件的前 10 个字 */
+fun Patch.title(): String = AskRule.conditionOf(ask).take(10).ifBlank { "未设条件" }

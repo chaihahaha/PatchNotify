@@ -113,48 +113,8 @@ class MainActivity : AppCompatActivity() {
 
         patches.addAll(ConfigStore.load(this))
 
-        // 老版本用的是「>6600 好了 5」这种 DSL，升级后转换成一句自然语言条件
-        run {
-            var migrated = false
-            for (pt in patches) {
-                pt.mode = "local"                      // 旧版本可能存了 seg7/auto/text
-                if (pt.ask.isNotBlank() || pt.rules.isEmpty()) continue
-                val r = pt.rules.last()
-                val expr = r.expr.trim()
-                val cond = when {
-                    expr.startsWith("~") -> expr.removePrefix("~").trim()
-                    Regex("^.+?>\\s*(\\d+)$").find(expr) != null ->
-                        "读数是否已经超过 " + Regex("^.+?>\\s*(\\d+)$").find(expr)!!.groupValues[1]
-                    Regex("^.+?<\\s*(\\d+)$").find(expr) != null ->
-                        "读数是否已经低于 " + Regex("^.+?<\\s*(\\d+)$").find(expr)!!.groupValues[1]
-                    else -> "画面是否满足 ${expr}"
-                }
-                pt.ask = if (r.speech.isBlank()) cond else "$cond。${r.speech}"
-                pt.rules = mutableListOf()
-                migrated = true
-            }
-            if (migrated) ConfigStore.save(this, patches)
-        }
         localModelDir = getSharedPreferences("patchnotify", MODE_PRIVATE)
             .getString("modelDir", localModelDir) ?: localModelDir
-
-        // 一次性迁移：把旧的默认阈值（211 的倍数）整体下调 20，提前提醒
-        val pref0 = getSharedPreferences("patchnotify", MODE_PRIVATE)
-        if (!pref0.getBoolean("shift20", false)) {
-            var changed = false
-            for (pt in patches) {
-                for (r in pt.rules) {
-                    val m = Regex("^(.+?)>\\s*(\\d+)$").find(r.expr) ?: continue
-                    val n = m.groupValues[2].toIntOrNull() ?: continue
-                    if (n % 211 == 0 && n in 211..2110) {
-                        r.expr = m.groupValues[1] + ">" + (n - 20)
-                        changed = true
-                    }
-                }
-            }
-            if (changed) ConfigStore.save(this, patches)
-            pref0.edit().putBoolean("shift20", true).apply()
-        }
 
         val soc = if (android.os.Build.VERSION.SDK_INT >= 31) android.os.Build.SOC_MODEL else "?"
         pnLog("=== 启动 $BUILD_TAG 权限=${hasAllFilesAccess()} ===")
@@ -184,7 +144,7 @@ class MainActivity : AppCompatActivity() {
             pickImage.launch("image/*")
             true
         }
-        binding.btnCondition.setOnClickListener { pickPatchForRules() }
+        binding.btnCondition.setOnClickListener { pickPatchForCondition() }
         binding.btnCondition.setOnLongClickListener {
             showLog()
             true
@@ -199,7 +159,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         refreshPatchList()
-        setStatus("就绪。先框选区域，再设规则。")
+        setStatus("先在画面上框一个区域，再点「设条件」")
     }
 
     private fun setStatus(s: String) {
@@ -265,7 +225,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun askFieldName(x: Float, y: Float, w: Float, h: Float) {
         // 不再让用户起字段名：显示名直接用判断条件的前 10 个字
-        val np = Patch(name = "", field = "", x = x, y = y, w = w, h = h, monitor = true)
+        val np = Patch(x = x, y = y, w = w, h = h, monitor = true)
         patches.add(np)
         ConfigStore.save(this, patches)
         refreshPatchList()
@@ -274,18 +234,18 @@ class MainActivity : AppCompatActivity() {
 
 
 
-    private fun pickPatchForRules() {
+    private fun pickPatchForCondition() {
         if (patches.isEmpty()) {
             Toast.makeText(this, "先框选一个区域", Toast.LENGTH_SHORT).show(); return
         }
-        val names = patches.map { it.field.ifBlank { it.name } }.toTypedArray()
+        val names = patches.map { it.title() }.toTypedArray()
         AlertDialog.Builder(this)
             .setTitle("选择区域")
             .setItems(names) { _, i -> editRulesDialog(patches[i]) }
             .show()
     }
 
-    /** 规则编辑：一行一条  条件 => 播报内容 => 秒数 */
+    /** 条件编辑：一句话 + 是否允许思考 */
     private fun editRulesDialog(p: Patch) {
         val pad = (resources.displayMetrics.density * 20).toInt()
         val layout = LinearLayout(this).apply {
@@ -371,9 +331,6 @@ class MainActivity : AppCompatActivity() {
                 }
                 p.ask = ask
                 p.think = thinkBox.isChecked
-                p.rules = mutableListOf()
-                p.mode = "local"
-                p.kind = "num"
                 localModelDir = dirInput.text.toString().trim().trimEnd('/')
                 localReady = false
                 getSharedPreferences("patchnotify", MODE_PRIVATE).edit()
@@ -562,7 +519,7 @@ class MainActivity : AppCompatActivity() {
                 null
             }
             if (crop == null) {
-                pnLog("crop 失败 patch=${p.field} rect=${p.x},${p.y},${p.w},${p.h} 整帧=${bitmap.width}x${bitmap.height}")
+                pnLog("crop 失败 patch=${p.title()} rect=${p.x},${p.y},${p.w},${p.h} 整帧=${bitmap.width}x${bitmap.height}")
                 next(); return
             }
             if (crop.width < 40 || crop.height < 16) {
@@ -570,11 +527,11 @@ class MainActivity : AppCompatActivity() {
                 // 裁出来太小基本等于画面外，直接判失败，别把垃圾发给模型
                 val cw = crop.width; val ch = crop.height
                 crop.recycle()
-                setStatus("${p.field} 框太小:${cw}x${ch}，请重画")
+                setStatus("${p.title()} 框太小:${cw}x${ch}，请重画")
                 next(); return
             }
 
-            // 唯一路径：本地 VLM 判断（mode 字段已无意义，旧配置里可能是 seg7/auto/text）
+            // 唯一路径：本地 VLM 判断
             run {
                 if (!hasAllFilesAccess()) {
                     val api = android.os.Build.VERSION.SDK_INT
@@ -607,17 +564,17 @@ class MainActivity : AppCompatActivity() {
                 localBusyAt = SystemClock.elapsedRealtime()
                 val bmp = crop
                 if (p.ask.isBlank()) {
-                    pnLog("local: ${p.field} 还没有判断条件，跳过并提示")
+                    pnLog("local: ${p.title()} 还没有判断条件，跳过并提示")
                     crop.recycle()
                     bitmap.recycle()
                     localBusy = false
                     busy = false
-                    setStatus("「${p.field}」还没写判断条件 —— 点「设条件」写一句话，例如：读数是否已接近001680")
+                    setStatus("「${p.title()}」还没写判断条件 —— 点「设条件」写一句话，例如：读数是否已接近001680")
                     return
                 }
                 val fs = "${bmp.width}x${bmp.height}"
                 if (fs != lastFrameSize) { lastFrameSize = fs; pnLog("local: 整帧=${bitmap.width}x${bitmap.height} crop=$fs") }
-                pnLog("local: 进入 patch=${p.field} crop=$fs think=${p.think}")
+                pnLog("local: 进入 patch=${p.title()} crop=$fs think=${p.think}")
                 val found = resolveModelDir()
                 if (found != localModelDir) { pnLog("local: 换用 $found"); localModelDir = found }
                 Thread {
@@ -1071,7 +1028,7 @@ class MainActivity : AppCompatActivity() {
             false -> "否"
             null -> rawIn.take(16).ifBlank { "?" }
         }
-        reads[p.id] = PatchRead(p.id, shown, null, SystemClock.elapsedRealtime())
+        reads[p.id] = PatchRead(p.id, shown, SystemClock.elapsedRealtime())
 
         try {
             if (PatchLog.shouldLog(p.id, shown)) PatchLog.log(p, shown)
@@ -1124,10 +1081,6 @@ class MainActivity : AppCompatActivity() {
         tts?.speak(text, TextToSpeech.QUEUE_FLUSH, null, "s")
     }
 
-    /** 触发一条规则：播报/提示音持续 seconds 秒，然后自动停 */
-    private fun triggerAlert(p: Patch, r: Rule) =
-        triggerAlert(p, r.speech, r.seconds, r.expr)
-
     private fun triggerAlert(p: Patch, speechIn: String, seconds: Int, label: String) {
         alerting = true
         val secs = seconds.coerceIn(1, 120)
@@ -1135,7 +1088,7 @@ class MainActivity : AppCompatActivity() {
         val beepOnly = text.isEmpty()          // 没写播报内容 → 只嘟嘟嘟
         runOnUiThread {
             binding.btnStopAlert.visibility = View.VISIBLE
-            setStatus("⚠ ${p.field} = ${reads[p.id]?.raw ?: "?"}  规则 $label  " +
+            setStatus("⚠ ${p.title()}：${reads[p.id]?.raw ?: "?"}  $label  " +
                     (if (beepOnly) "提示音 ${secs} 秒" else "播报 ${secs} 秒"))
         }
         alertJob?.cancel()
