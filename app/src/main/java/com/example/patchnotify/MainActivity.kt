@@ -99,7 +99,7 @@ class MainActivity : AppCompatActivity() {
 
     companion object {
         /** 每次发版改这里，屏幕上会显示，便于确认装的是哪个包 */
-        const val BUILD_TAG = "v81-clean"
+        const val BUILD_TAG = "v82-meta"
         private const val REQ_PERMS = 1001
         private const val FRAME_INTERVAL_MS = 250L      // 4 fps
         private const val ROUND_BUDGET_MS = 200L
@@ -119,7 +119,7 @@ class MainActivity : AppCompatActivity() {
         val soc = if (android.os.Build.VERSION.SDK_INT >= 31) android.os.Build.SOC_MODEL else "?"
         pnLog("=== 启动 $BUILD_TAG 权限=${hasAllFilesAccess()} ===")
         pnLog("device: model=${android.os.Build.MODEL} soc=$soc hw=${android.os.Build.HARDWARE} abi=${android.os.Build.SUPPORTED_ABIS.firstOrNull()}")
-        try { PatchShot.init(java.io.File(logDir())) } catch (e: Exception) { pnLog("截图目录初始化失败: ${e.message}") }
+        try { PatchShot.init(java.io.File(logDir()), BUILD_TAG, "${android.os.Build.MODEL} / ${if (android.os.Build.VERSION.SDK_INT >= 31) android.os.Build.SOC_MODEL else "?"} / ${android.os.Build.VERSION.RELEASE}") } catch (e: Exception) { pnLog("截图目录初始化失败: ${e.message}") }
         initTts()
         setupUi()
 
@@ -483,6 +483,16 @@ class MainActivity : AppCompatActivity() {
             } catch (e: Exception) { /* 保持原样 */ }
         }
 
+        PatchShot.setFrameSize(bitmap.width, bitmap.height)
+
+        // 每天留一张整帧（未裁剪），方便日后确认这些裁剪图拍的是什么
+        if (PatchShot.dailyDue()) {
+            try {
+                val copy = bitmap.copy(Bitmap.Config.ARGB_8888, false)
+                if (copy != null) Thread { PatchShot.saveDaily(copy) }.start()
+            } catch (_: Throwable) { }
+        }
+
         val targets = patches.filter { it.monitor }
         if (targets.isEmpty()) {
             pnLog("没有处于监控状态的区域（共 ${patches.size} 个），请点「设条件」保存一次")
@@ -656,12 +666,11 @@ class MainActivity : AppCompatActivity() {
                             }
 
                             // 截图存档：平时 60 秒一张，条件成立的那一帧强制补一张
-                            try {
-                                val hit = r.trim().startsWith("是") && nlState[p.id] != true
-                                PatchShot.maybe(p, bmp, hit)
-                            } catch (_: Throwable) { }
+                            val hit = r.trim().startsWith("是") && nlState[p.id] != true
+                            try { PatchShot.maybe(p, bmp, hit) } catch (_: Throwable) { }
 
                             // 条件成立且是「否→是」的跃变时，再把句号后的问题问一遍，答案拿去播报
+                            var ansText = ""
                             val q = AskRule.questionOf(p.ask)
                             if (q.isNotBlank() && r.trim() == "是" && nlState[p.id] != true) {
                                 val t1 = SystemClock.elapsedRealtime()
@@ -669,8 +678,13 @@ class MainActivity : AppCompatActivity() {
                                     Vlm.ask(rgb, bw, bh, q, p.think).trim()
                                 } catch (e: Throwable) { "" }
                                 pnLog("local: 追问「$q」→ 「$ans」 用时 ${(SystemClock.elapsedRealtime() - t1) / 1000.0}s")
-                                if (ans.isNotBlank() && !ans.startsWith("ERR")) r = "是|" + ans
+                                if (ans.isNotBlank() && !ans.startsWith("ERR")) {
+                                    ansText = ans
+                                    r = "是|" + ans
+                                }
                             }
+                            // 命中记一行：时间 / 判定 / 问题 / 回答
+                            if (hit) try { PatchShot.event(p, "是", q, ansText) } catch (_: Throwable) { }
                         }
                     } catch (e: Throwable) {
                         r = "ERR:" + (e.message ?: "").take(40)
