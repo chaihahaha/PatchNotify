@@ -93,10 +93,10 @@ object NativeOcr {
     }
 
     /** 自然语言规则：返回模型原话（应是/否） */
-    fun ocrPrompt(rgb: ByteArray, w: Int, h: Int, desc: String): String {
+    fun ocrPrompt(rgb: ByteArray, w: Int, h: Int, ask: String): String {
         if (!ready) return "ERR:模型未加载"
-        val p = "请判断画面是否满足以下描述，只回答「是」或「否」，不要解释。\n描述：" + desc
-        return NativeLlama.ocr(rgb, w, h, p, 24).trim()
+        // 只允许 1~2 个 token，堵死 thinking 和解释
+        return NativeLlama.ocr(rgb, w, h, AskRule.prompt(ask), 6).trim()
     }
 
     private fun extractDigits(raw: String): String {

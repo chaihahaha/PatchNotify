@@ -46,7 +46,9 @@ data class Patch(
     /** 识别方式：local（手机本地 Qwen，默认）/ auto（先数码管后退回 ML Kit）/ seg7 / text */
     var mode: String = "local",
     /** 识别内容：num（数字）/ cn（中文）/ en（英文）/ mix（混合） */
-    var kind: String = "num"
+    var kind: String = "num",
+    /** 自然语言规则："条件句。命中时播报的话"。VLM 只回答是/否 */
+    var ask: String = ""
 ) {
     fun toJson(): JSONObject = JSONObject().apply {
         put("id", id)
@@ -58,6 +60,7 @@ data class Patch(
         put("pick", pick)
         put("mode", mode)
         put("kind", kind)
+        put("ask", ask)
         val arr = JSONArray()
         rules.forEach { arr.put(it.toJson()) }
         put("rules", arr)
@@ -86,7 +89,8 @@ data class Patch(
                 rules = rules,
                 pick = o.optString("pick", "max"),
                 mode = o.optString("mode", "local"),
-                kind = o.optString("kind", "num")
+                kind = o.optString("kind", "num"),
+            ask = o.optString("ask", "")
             )
         }
     }

@@ -64,6 +64,8 @@ class MainActivity : AppCompatActivity() {
     )
     private var lastFrameAt = 0L
     private var rrIndex = 0
+    private val nlState = HashMap<String, Boolean>()     // patch -> 上次是否命中
+    private val nlRearmAt = HashMap<String, Long>()      // patch -> 允许再次触发的时间
     private var busy = false
     private var busyAt = 0L
     private var lastBusyLogAt = 0L
@@ -118,7 +120,7 @@ class MainActivity : AppCompatActivity() {
 
     companion object {
         /** 每次发版改这里，屏幕上会显示，便于确认装的是哪个包 */
-        const val BUILD_TAG = "v63-patchlog"
+        const val BUILD_TAG = "v64-ask"
         private const val REQ_PERMS = 1001
         private const val FRAME_INTERVAL_MS = 250L      // 4 fps
         private const val OCR_BUDGET_MS = 200L
@@ -131,6 +133,28 @@ class MainActivity : AppCompatActivity() {
         setContentView(binding.root)
 
         patches.addAll(ConfigStore.load(this))
+
+        // 老版本用的是「>6600 好了 5」这种 DSL，升级后转换成一句自然语言条件
+        run {
+            var migrated = false
+            for (pt in patches) {
+                if (pt.ask.isNotBlank() || pt.rules.isEmpty()) continue
+                val r = pt.rules.last()
+                val expr = r.expr.trim()
+                val cond = when {
+                    expr.startsWith("~") -> expr.removePrefix("~").trim()
+                    Regex("^.+?>\\s*(\\d+)$").find(expr) != null ->
+                        "读数是否已经超过 " + Regex("^.+?>\\s*(\\d+)$").find(expr)!!.groupValues[1]
+                    Regex("^.+?<\\s*(\\d+)$").find(expr) != null ->
+                        "读数是否已经低于 " + Regex("^.+?<\\s*(\\d+)$").find(expr)!!.groupValues[1]
+                    else -> "画面是否满足 ${expr}"
+                }
+                pt.ask = if (r.speech.isBlank()) cond else "$cond。${r.speech}"
+                pt.rules = mutableListOf()
+                migrated = true
+            }
+            if (migrated) ConfigStore.save(this, patches)
+        }
         localModelDir = getSharedPreferences("patchnotify", MODE_PRIVATE)
             .getString("modelDir", localModelDir) ?: localModelDir
 
@@ -311,65 +335,25 @@ class MainActivity : AppCompatActivity() {
         }
 
         layout.addView(TextView(this).apply {
-            text = "一行一条，用空格分开：条件 播报内容 秒数\n" +
-                   "例：\n${p.field}>6600 好了 5\n${p.field}>6700 第二条 5\n" +
-                   "条件里可以带空格（${p.field} > 6600 和 ${p.field}>6600 都认）\n" +
-                   "播报内容省略 = 只响「嘟嘟嘟」提示音\n" +
-                   "秒数省略 = 默认 5 秒；旧写法 ${p.field}>6600=>好了=>5 也还认\n" +
-                   "也支持中文描述（以句号结尾），由模型判断是/否：\n瓶子里有白色药片。 提醒 10"
+            text = "写一句话，模型只回答「是」或「否」。\n" +
+                   "例：数码管读数是否已接近 001680\n" +
+                   "想播报就把要播的话写在句号后面：\n" +
+                   "数码管读数是否已接近 001680。快充好了\n" +
+                   "没有句号 = 命中只响提示音"
             textSize = 11f
             setTextColor(0xFF888888.toInt())
         })
 
         val input = EditText(this).apply {
-            setText(ConditionParser.rulesToText(p.rules))
-            hint = "${p.field}>6600 好了 5"
-            typeface = Typeface.MONOSPACE
-            textSize = 13f
+            setText(p.ask)
+            hint = "数码管读数是否已接近 001680。快充好了"
+            textSize = 14f
             gravity = Gravity.TOP
-            minLines = 5
-            maxLines = 12
+            minLines = 3
+            maxLines = 6
         }
         layout.addView(input)
 
-        val pickLabels = arrayOf("取数字：最大值", "取数字：第一个", "取数字：最后一个")
-        val pickKeys = arrayOf("max", "first", "last")
-        val spinner = Spinner(this).apply {
-            adapter = ArrayAdapter(this@MainActivity, android.R.layout.simple_spinner_dropdown_item, pickLabels)
-            setSelection(pickKeys.indexOf(p.pick).coerceAtLeast(0))
-        }
-        layout.addView(TextView(this).apply {
-            text = "显示区里有多组数字时取哪个（欧姆龙 00 1679 → 选最大值）"
-            textSize = 11f
-            setTextColor(0xFF888888.toInt())
-        })
-        layout.addView(spinner)
-
-        val modeLabels = arrayOf(
-            "识别方式：本地 Qwen（默认）",
-            "识别方式：自动（先数码管）",
-            "识别方式：只读数码管",
-            "识别方式：只认印刷文字"
-        )
-        val modeKeys = arrayOf("local", "auto", "seg7", "text")
-        val modeSpinner = Spinner(this).apply {
-            adapter = ArrayAdapter(this@MainActivity, android.R.layout.simple_spinner_dropdown_item, modeLabels)
-            setSelection(modeKeys.indexOf(p.mode).coerceAtLeast(0))
-        }
-        layout.addView(TextView(this).apply {
-            text = "本地 Qwen = 手机内推理（默认）；数码管 = LED 计数器/温度表；印刷文字 = 标签"
-            textSize = 11f
-            setTextColor(0xFF888888.toInt())
-        })
-        layout.addView(modeSpinner)
-
-        val kindLabels = arrayOf("识别内容：数字", "识别内容：中文", "识别内容：英文", "识别内容：中英数字混合")
-        val kindKeys = arrayOf("num", "cn", "en", "mix")
-        val kindSpinner = Spinner(this).apply {
-            adapter = ArrayAdapter(this@MainActivity, android.R.layout.simple_spinner_dropdown_item, kindLabels)
-            setSelection(kindKeys.indexOf(p.kind).coerceAtLeast(0))
-        }
-        layout.addView(kindSpinner)
 
         layout.addView(TextView(this).apply {
             text = "本地模型目录（识别方式选「本地 Qwen」时才用）"
@@ -411,15 +395,19 @@ class MainActivity : AppCompatActivity() {
 
         dialog.setOnShowListener {
             dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
-                val (rules, err) = ConditionParser.parseRulesText(input.text.toString())
-                if (err != null) {
-                    Toast.makeText(this, err, Toast.LENGTH_LONG).show()
+                val ask = input.text.toString().replace("\n", " ").trim()
+                if (ask.isEmpty()) {
+                    Toast.makeText(this, "请写一句话条件", Toast.LENGTH_SHORT).show()
                     return@setOnClickListener
                 }
-                p.rules = rules.toMutableList()
-                p.pick = pickKeys[spinner.selectedItemPosition.coerceIn(0, 2)]
-                p.mode = modeKeys[modeSpinner.selectedItemPosition.coerceIn(0, 3)]
-                p.kind = kindKeys[kindSpinner.selectedItemPosition.coerceIn(0, 3)]
+                if (AskRule.conditionOf(ask).isEmpty()) {
+                    Toast.makeText(this, "句号前没有条件", Toast.LENGTH_SHORT).show()
+                    return@setOnClickListener
+                }
+                p.ask = ask
+                p.rules = mutableListOf()
+                p.mode = "local"
+                p.kind = "num"
                 localModelDir = dirInput.text.toString().trim().trimEnd('/')
                 localReady = false
                 getSharedPreferences("patchnotify", MODE_PRIVATE).edit()
@@ -429,19 +417,15 @@ class MainActivity : AppCompatActivity() {
                 ConfigStore.save(this, patches)
                 refreshPatchList()
                 dialog.dismiss()
-                val text = if (rules.isEmpty()) "规则已清空" else "已保存 ${rules.size} 条规则"
+                val text = "已保存：" + AskRule.conditionOf(ask)
                 setStatus(text)
                 Toast.makeText(this, text, Toast.LENGTH_SHORT).show()
             }
             dialog.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener {
-                val (rules, _) = ConditionParser.parseRulesText(input.text.toString())
-                val first = rules.firstOrNull()
-                if (first == null) {
-                    Toast.makeText(this, "还没有有效规则", Toast.LENGTH_SHORT).show()
-                } else {
-                    speak(first.speech.ifBlank { "测试播报" })
-                    Toast.makeText(this, "试听：${first.speech}", Toast.LENGTH_SHORT).show()
-                }
+                val sp = AskRule.speechOf(input.text.toString())
+                speak(sp.ifBlank { "测试播报" })
+                Toast.makeText(this, if (sp.isBlank()) "没有播报词，命中只响提示音" else "试听：$sp",
+                    Toast.LENGTH_SHORT).show()
             }
         }
         dialog.show()
@@ -626,6 +610,7 @@ class MainActivity : AppCompatActivity() {
                 localBusy = true
                 val bmp = crop
                 val kind = when (p.kind) { "cn" -> 1; "en" -> 2; "mix" -> 3; else -> 0 }
+                val askMode = p.ask.isNotBlank()
                 val fs = "${bmp.width}x${bmp.height}"
                 if (fs != lastFrameSize) { lastFrameSize = fs; pnLog("local: 整帧=${bitmap.width}x${bitmap.height} crop=$fs") }
                 pnLog("local: 进入 patch=${p.field} crop=$fs kind=$kind")
@@ -709,7 +694,18 @@ class MainActivity : AppCompatActivity() {
                                 pnLog("local: 画面未变化，复用「$r」")
                             } else {
                                 val t0 = SystemClock.elapsedRealtime()
-                                r = NativeOcr.ocr(rgb, bw, bh, kind)
+                                val nc = if (askMode) numericCond(p.ask) else null
+                                r = when {
+                                    !askMode -> NativeOcr.ocr(rgb, bw, bh, kind)
+                                    nc != null -> {
+                                        // 数值条件：先读数字（这条链路准），再在本地比较
+                                        val digits = NativeOcr.ocr(rgb, bw, bh, 0)
+                                        val x = numberFrom(digits)
+                                        if (x == null) "ERR:读不到数字「${digits.take(8)}」"
+                                        else (if (test(nc, x)) "是" else "否") + "|$digits"
+                                    }
+                                    else -> NativeOcr.ocrPrompt(rgb, bw, bh, p.ask)
+                                }
                                 if (r.startsWith("ERR:TOOBIG:")) {
                                     val a = r.split(":")
                                     r = "框太大：${a.getOrNull(2)} 个图像token（上限 ${a.getOrNull(3)}），请把框划小一点"
@@ -728,7 +724,9 @@ class MainActivity : AppCompatActivity() {
                     }
                     bmp.recycle()
                     localBusy = false
-                    runOnUiThread { onRead(p, r) }
+                    runOnUiThread {
+                        if (askMode) onVerdict(p, r) else onRead(p, r)
+                    }
                 }.start()
                 bitmap.recycle()
                 busy = false              // ★ 推理在后台线程跑，这里不能占着 busy
@@ -1242,6 +1240,51 @@ class MainActivity : AppCompatActivity() {
 
     private fun key(p: Patch, r: Rule) = p.id + "|" + r.expr
 
+    /**
+     * 自然语言规则的判定结果。
+     * 只在「否 → 是」的跃变时响一次；条件恢复后才重新武装，避免条件持续满足时一直响。
+     */
+    private fun onVerdict(p: Patch, rawIn: String) {
+        val parts = rawIn.split("|")
+        val raw = parts[0]
+        val digits = parts.getOrNull(1)?.trim().orEmpty()
+        val yes = AskRule.parse(raw)
+        val shown = when (yes) {
+            true -> if (digits.isEmpty()) "是" else "$digits 是"
+            false -> if (digits.isEmpty()) "否" else "$digits 否"
+            null -> rawIn.take(16).ifBlank { "?" }
+        }
+        reads[p.id] = PatchRead(p.id, shown, null, SystemClock.elapsedRealtime())
+
+        try {
+            if (PatchLog.shouldLog(p.id, shown)) PatchLog.log(p, shown)
+        } catch (_: Exception) { }
+
+        val prev = nlState[p.id] ?: false
+        nlState[p.id] = (yes == true)
+
+        val now = SystemClock.elapsedRealtime()
+        if (yes == false) {                      // 条件恢复 → 重新武装
+            if (prev) nlRearmAt[p.id] = now + REARM_MS
+        }
+
+        if (SystemClock.elapsedRealtime() - lastUiAt > 400) {
+            lastUiAt = SystemClock.elapsedRealtime()
+            runOnUiThread { refreshPatchList() }
+        }
+
+        if (yes == true && !prev && running && !alerting) {
+            val canFire = now >= (nlRearmAt[p.id] ?: 0L)
+            if (canFire) {
+                nlRearmAt[p.id] = now + REARM_MS
+                val speech = AskRule.speechOf(p.ask)
+                pnLog("规则命中：${p.field} 「${AskRule.conditionOf(p.ask)}」 → 播报「$speech」")
+                triggerAlert(p, speech, 5, AskRule.conditionOf(p.ask))
+            }
+        }
+        setStatus("${p.field}: $shown")
+    }
+
     // ---------------------------------------------------------------- 播报
 
     private fun initTts() {
@@ -1259,14 +1302,17 @@ class MainActivity : AppCompatActivity() {
     }
 
     /** 触发一条规则：播报/提示音持续 seconds 秒，然后自动停 */
-    private fun triggerAlert(p: Patch, r: Rule) {
+    private fun triggerAlert(p: Patch, r: Rule) =
+        triggerAlert(p, r.speech, r.seconds, r.expr)
+
+    private fun triggerAlert(p: Patch, speechIn: String, seconds: Int, label: String) {
         alerting = true
-        val secs = r.seconds.coerceIn(1, 120)
-        val text = r.speech.trim()
+        val secs = seconds.coerceIn(1, 120)
+        val text = speechIn.trim()
         val beepOnly = text.isEmpty()          // 没写播报内容 → 只嘟嘟嘟
         runOnUiThread {
             binding.btnStopAlert.visibility = View.VISIBLE
-            setStatus("⚠ ${p.field} = ${reads[p.id]?.value ?: "?"}  规则 ${r.expr}  " +
+            setStatus("⚠ ${p.field} = ${reads[p.id]?.raw ?: "?"}  规则 $label  " +
                     (if (beepOnly) "提示音 ${secs} 秒" else "播报 ${secs} 秒"))
         }
         alertJob?.cancel()
