@@ -93,13 +93,13 @@ class MainActivity : AppCompatActivity() {
     ).absolutePath
 
     /** 选一张照片跑一遍同样的判断，用来定位相机侧的问题 */
-    private val pickImage = registerForActivityResult(
+    private val imagePicker = registerForActivityResult(
         androidx.activity.result.contract.ActivityResultContracts.GetContent()
     ) { uri -> if (uri != null) testWithImage(uri) }
 
     companion object {
         /** 每次发版改这里，屏幕上会显示，便于确认装的是哪个包 */
-        const val BUILD_TAG = "v83-append"
+        const val BUILD_TAG = "v84-split"
         private const val REQ_PERMS = 1001
         private const val FRAME_INTERVAL_MS = 250L      // 4 fps
         private const val ROUND_BUDGET_MS = 200L
@@ -141,7 +141,7 @@ class MainActivity : AppCompatActivity() {
         binding.btnAddPatch.setOnClickListener { startRectEdit() }
         binding.btnAddPatch.setOnLongClickListener {
             Toast.makeText(this, "选一张照片测试识别效果", Toast.LENGTH_SHORT).show()
-            pickImage.launch("image/*")
+            imagePicker.launch("image/*")
             true
         }
         binding.btnCondition.setOnClickListener { pickPatchForCondition() }
@@ -195,7 +195,7 @@ class MainActivity : AppCompatActivity() {
                     text = "${p.title()}  [$shownRaw]"
                     textSize = 12f
                     setTextColor(if (hits.contains(p.id)) 0xFFFF5252.toInt() else 0xFFDDDDDD.toInt())
-                    setOnClickListener { editRulesDialog(p) }
+                    setOnClickListener { editConditionDialog(p) }
                 }
                 row.addView(cb)
                 row.addView(name, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
@@ -229,7 +229,7 @@ class MainActivity : AppCompatActivity() {
         patches.add(np)
         ConfigStore.save(this, patches)
         refreshPatchList()
-        editRulesDialog(np)
+        editConditionDialog(np)
     }
 
 
@@ -241,12 +241,12 @@ class MainActivity : AppCompatActivity() {
         val names = patches.map { it.title() }.toTypedArray()
         AlertDialog.Builder(this)
             .setTitle("选择区域")
-            .setItems(names) { _, i -> editRulesDialog(patches[i]) }
+            .setItems(names) { _, i -> editConditionDialog(patches[i]) }
             .show()
     }
 
     /** 条件编辑：一句话 + 是否允许思考 */
-    private fun editRulesDialog(p: Patch) {
+    private fun editConditionDialog(p: Patch) {
         val pad = (resources.displayMetrics.density * 20).toInt()
         val layout = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -325,7 +325,7 @@ class MainActivity : AppCompatActivity() {
                     Toast.makeText(this, "请写一句话条件", Toast.LENGTH_SHORT).show()
                     return@setOnClickListener
                 }
-                if (AskRule.conditionOf(ask).isEmpty()) {
+                if (Condition.conditionOf(ask).isEmpty()) {
                     Toast.makeText(this, "句号前没有条件", Toast.LENGTH_SHORT).show()
                     return@setOnClickListener
                 }
@@ -340,12 +340,12 @@ class MainActivity : AppCompatActivity() {
                 ConfigStore.save(this, patches)
                 refreshPatchList()
                 dialog.dismiss()
-                val text = "已保存：" + AskRule.conditionOf(ask)
+                val text = "已保存：" + Condition.conditionOf(ask)
                 setStatus(text)
                 Toast.makeText(this, text, Toast.LENGTH_SHORT).show()
             }
             dialog.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener {
-                val q = AskRule.questionOf(input.text.toString())
+                val q = Condition.questionOf(input.text.toString())
                 Toast.makeText(this,
                     if (q.isBlank()) "条件成立时只响提示音" else "条件成立后会问模型：$q",
                     Toast.LENGTH_SHORT).show()
@@ -672,7 +672,7 @@ class MainActivity : AppCompatActivity() {
 
                             // 条件成立且是「否→是」的跃变时，再把句号后的问题问一遍，答案拿去播报
                             var ansText = ""
-                            val q = AskRule.questionOf(p.ask)
+                            val q = Condition.questionOf(p.ask)
                             if (q.isNotBlank() && r.trim() == "是" && nlState[p.id] != true) {
                                 val t1 = SystemClock.elapsedRealtime()
                                 val ans = try {
@@ -809,9 +809,8 @@ class MainActivity : AppCompatActivity() {
                 }
                 walk(tree, root)
                 pnLog("import: $n files, ${bytes / 1048576} MB -> ${root.absolutePath}")
-                val okDir = if (java.io.File(root, "onnx").isDirectory) root
-                            else if (java.io.File(root, "qwen_2b/onnx").isDirectory) java.io.File(root, "qwen_2b")
-                            else root
+                val okDir = if (hasGguf(root)) root
+                            else root.listFiles()?.firstOrNull { it.isDirectory && hasGguf(it) } ?: root
                 runOnUiThread {
                     target?.setText(okDir.absolutePath)
                     localModelDir = okDir.absolutePath
@@ -886,26 +885,31 @@ class MainActivity : AppCompatActivity() {
             (root + "/" + parts.getOrElse(1) { "" }).trimEnd('/')
         }.getOrNull()
         if (path == null) { Toast.makeText(this, "无法转换成路径", Toast.LENGTH_LONG).show(); return }
-        pnLog("picked dir: $path")
+        pnLog("选择目录: $path")
         dirEdit?.setText(path)
         checkModelDir(path)
     }
 
-    /** 在常见位置里找一个含 onnx/ 的目录，避免用户放对了却因为路径不同读不到 */
+    /** 目录里有非 mmproj 的 .gguf 才算模型目录 */
+    private fun hasGguf(dir: java.io.File): Boolean =
+        dir.isDirectory && dir.listFiles()?.any {
+            it.isFile && it.name.endsWith(".gguf", true) && !it.name.startsWith("mmproj", true)
+        } == true
+
+    /** 在常见位置里找模型目录，避免用户放对了却因为路径不同读不到 */
     private fun resolveModelDir(): String {
         val root = android.os.Environment.getExternalStorageDirectory()
-        val priv = java.io.File(filesDir, "models/qwen_2b")
-        if (java.io.File(priv, "onnx").isDirectory) return priv.absolutePath
         val cands = listOf(
             java.io.File(localModelDir),
+            java.io.File(filesDir, "models/qwen_2b"),
             java.io.File(root, "patchnotify/qwen_2b"),
             java.io.File(root, "Download/patchnotify/qwen_2b"),
             java.io.File(root, "Download/qwen_2b"),
             java.io.File(root, "qwen_2b")
         )
-        for (c in cands) {
-            if (java.io.File(c, "onnx").isDirectory) return c.absolutePath
-            if (java.io.File(c, "vision_encoder_fp16.onnx").isFile) return c.absolutePath
+        for (c in cands) if (hasGguf(c)) return c.absolutePath
+        for (c in cands) c.listFiles()?.filter { it.isDirectory }?.forEach {
+            if (hasGguf(it)) return it.absolutePath
         }
         return localModelDir
     }
@@ -1039,14 +1043,14 @@ class MainActivity : AppCompatActivity() {
     }
 
     /**
-     * 自然语言规则的判定结果。
+     * 一句话条件的判定结果。
      * 只在「否 → 是」的跃变时响一次；条件恢复后才重新武装，避免条件持续满足时一直响。
      */
     private fun onVerdict(p: Patch, rawIn: String) {
         val parts = rawIn.split("|", limit = 2)
         val raw = parts[0]
         val answer = parts.getOrNull(1)?.trim().orEmpty()
-        val yes = AskRule.parse(raw)
+        val yes = Condition.parse(raw)
         val shown = when (yes) {
             true -> if (answer.isEmpty()) "是" else "是 · $answer"
             false -> "否"
@@ -1072,7 +1076,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         pnLog("judge: raw=${raw.replace("\n", " ").take(20)} yes=$yes prev=$prev running=$running alerting=$alerting " +
-              "rearm=${(nlRearmAt[p.id] ?: 0L) - now}ms prompt=${AskRule.prompt(p.ask).take(60)}")
+              "rearm=${(nlRearmAt[p.id] ?: 0L) - now}ms prompt=${Condition.prompt(p.ask).take(60)}")
         if (yes == true && !prev && running && !alerting) {
             val canFire = now >= (nlRearmAt[p.id] ?: 0L)
             if (canFire) {
@@ -1101,11 +1105,11 @@ class MainActivity : AppCompatActivity() {
         tts?.speak(text, TextToSpeech.QUEUE_FLUSH, null, "s")
     }
 
-    private fun triggerAlert(p: Patch, speechIn: String, seconds: Int, label: String) {
+    private fun triggerAlert(p: Patch, sayIn: String, seconds: Int, label: String) {
         alerting = true
         val secs = seconds.coerceIn(1, 120)
-        val text = speechIn.trim()
-        val beepOnly = text.isEmpty()          // 没写播报内容 → 只嘟嘟嘟
+        val text = sayIn.trim()
+        val beepOnly = text.isEmpty()          // 没有问题可答 → 只嘟嘟嘟
         runOnUiThread {
             binding.btnStopAlert.visibility = View.VISIBLE
             setStatus("⚠ ${p.title()}：${reads[p.id]?.raw ?: "?"}  $label  " +

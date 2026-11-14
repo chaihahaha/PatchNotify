@@ -16,7 +16,7 @@ data class Patch(
     var w: Float = 0f,
     var h: Float = 0f,
     var monitor: Boolean = true,
-    /** 一句话规则：「条件。条件成立后要问的问题（可选）」。VLM 只回答是/否 */
+    /** 一句话条件：「条件。条件成立后要问的问题（可选）」。VLM 只回答是/否 */
     var ask: String = "",
     /** 允许模型先思考再回答（慢，开放条件才需要） */
     var think: Boolean = false,
@@ -34,38 +34,17 @@ data class Patch(
     }
 
     companion object {
-        fun fromJson(o: JSONObject): Patch {
-            var ask = o.optString("ask", "")
-            // 兼容旧配置：`>6600 好了 5` 这种 DSL 或 rules 数组，转成一句话
-            if (ask.isBlank()) {
-                val rules = o.optJSONArray("rules")
-                val last = if (rules != null && rules.length() > 0) rules.getJSONObject(rules.length() - 1) else null
-                val expr = (last?.optString("expr") ?: o.optString("expr", "")).trim()
-                val speech = last?.optString("speech") ?: o.optString("speech", "")
-                if (expr.isNotBlank()) {
-                    val cond = when {
-                        expr.startsWith("~") -> expr.removePrefix("~").trim()
-                        Regex("^.+?>\\s*(\\d+)$").find(expr) != null ->
-                            "读数是否已经超过 " + Regex("^.+?>\\s*(\\d+)$").find(expr)!!.groupValues[1]
-                        Regex("^.+?<\\s*(\\d+)$").find(expr) != null ->
-                            "读数是否已经低于 " + Regex("^.+?<\\s*(\\d+)$").find(expr)!!.groupValues[1]
-                        else -> "画面是否满足 $expr"
-                    }
-                    ask = if (speech.isBlank()) cond else "$cond。$speech"
-                }
-            }
-            return Patch(
-                id = o.optString("id", UUID.randomUUID().toString()),
-                x = o.optDouble("x", 0.0).toFloat(),
-                y = o.optDouble("y", 0.0).toFloat(),
-                w = o.optDouble("w", 0.0).toFloat(),
-                h = o.optDouble("h", 0.0).toFloat(),
-                monitor = o.optBoolean("monitor", true),
-                ask = ask,
-                think = o.optBoolean("think", false),
-                updatedAt = o.optLong("updated_at", 0L)
-            )
-        }
+        fun fromJson(o: JSONObject) = Patch(
+            id = o.optString("id", UUID.randomUUID().toString()),
+            x = o.optDouble("x", 0.0).toFloat(),
+            y = o.optDouble("y", 0.0).toFloat(),
+            w = o.optDouble("w", 0.0).toFloat(),
+            h = o.optDouble("h", 0.0).toFloat(),
+            monitor = o.optBoolean("monitor", true),
+            ask = o.optString("ask", ""),
+            think = o.optBoolean("think", false),
+            updatedAt = o.optLong("updated_at", 0L)
+        )
     }
 }
 
@@ -96,4 +75,4 @@ object ConfigStore {
 data class PatchRead(val patchId: String, val raw: String, val at: Long)
 
 /** 界面上显示的名字：判断条件的前 10 个字 */
-fun Patch.title(): String = AskRule.conditionOf(ask).take(10).ifBlank { "未设条件" }
+fun Patch.title(): String = Condition.conditionOf(ask).take(10).ifBlank { "未设条件" }

@@ -9,7 +9,8 @@ Android 端本地 VLM 画面监控。摄像头画面里框选一块区域，每 
 - CameraX 预览 + 4 fps 抽帧，按区域轮询识别
 - 识别方式：本地 Qwen（默认）/ 自动（先数码管）/ 只读数码管 / 只认印刷文字
 - 识别内容：数字 / 中文 / 英文 / 混合
-- 规则就是一句话：`读数是否已接近 001680`
+- 条件就是一句话：`读数是否已接近 001680`
+- **只有中文句号 `。` 能分隔**条件和问题，逗号、分号、问号都算条件本身
 - 句号后面可以跟一个问题（可选）：`读数是否已接近 001680。还需要充多久？`
   条件成立时用同一张裁剪图再问一次模型，回答内容用语音播报；没有句号就只响提示音
 - 判断交给 VLM，只输出「是 / 否」；按「否 → 是」的跃变触发一次，条件恢复后才重新武装
@@ -21,9 +22,9 @@ Android 端本地 VLM 画面监控。摄像头画面里框选一块区域，每 
 
 ```
 app/src/main/java/com/example/patchnotify/
-  MainActivity.kt        相机、识别循环、规则触发、TTS
+  MainActivity.kt        相机、判断循环、条件触发、TTS
   NativeLlama.kt         JNI 入口 + 模型文件自动发现
-  AskRule.kt             一句话规则：拆分条件/播报、拼提示词、解析是/否
+  Condition.kt             一句话条件：拆分条件/问题、拼提示词、解析是/否
   Config.kt              Patch / Rule 数据模型与持久化
 app/src/main/cpp/
   pn_llama.cpp           llama.cpp/mtmd 的 JNI 薄封装（图像 → 多模态 prompt → 贪心解码）
@@ -80,7 +81,7 @@ llvm-objdump -d app/src/main/jniLibs/arm64-v8a/libggml-cpu.so | grep -cE '\bsdot
 
 ## 模型从哪来
 
-权重是 `Qwen/Qwen3.5-2B` 的 GGUF 量化版（原 ONNX 版同样是这个模型的导出）。
+权重是 `Qwen/Qwen3.5-2B` 的 GGUF 量化版。
 
 ```bash
 # 模型 ~1.1 GB
@@ -148,7 +149,7 @@ CPU 版本还带来两个副作用：不占 GPU，相机预览不卡；没有 Vu
 ## 说明
 
 - 输入尺寸不写死：按框选区域实际大小交给 mtmd 处理，`image_max_tokens` 上限 128
-  （与旧 ONNX 版 smart_resize 产出的 token 数对齐；压到 64 会把首位 0 读成 9）
+  （压到 64 会把首位 0 读成 9，所以等于不压缩）
 - 默认关掉 Qwen3.5 的 thinking：在 assistant 开头预填空 think 块，输出从数百 token 降到几个；
   每个区域可以单独打开（`Patch.think`），此时预算给 800 token，生成后按 `</think>` 截断；
   若到上限还没闭合，判定为思考被截断，自动改用不思考重跑一次

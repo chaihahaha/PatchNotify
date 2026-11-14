@@ -1,35 +1,26 @@
 package com.example.patchnotify
 
 /**
- * 一条自然语言规则，形如：
- *   "数码管读数是否已接近 001680。快充好了"
- * 句号前是判断条件，句号后（可选）是命中时播报的那句话。
- * 没有句号 → 整句都是条件，命中只响提示音。
+ * 一句话条件，形如：
+ *   "读数是否已接近001680。还需要充多久？"
+ * 「。」前是判断条件，后面（可选）是条件成立时要问模型的问题。
+ * 只有中文句号能分隔，逗号、分号、问号、感叹号都算条件本身的一部分。
+ * 没有「。」→ 整句都是条件，成立时只响提示音。
  */
-object AskRule {
+object Condition {
 
-    private val SPLIT = charArrayOf('。', '.', '！', '!', '；', ';')
-
-    /** 拆成 (条件, 播报文本)；小数点的 "." 不会被当成句号 */
+    /** 只有「。」能分隔条件和问题，其它标点一律待在原句里 */
     fun split(ask: String): Pair<String, String> {
         val t = ask.trim()
         if (t.isEmpty()) return "" to ""
-        for (i in t.indices) {
-            if (t[i] !in SPLIT) continue
-            // "3.5" 这种小数点：后面紧跟数字就跳过
-            val next = t.getOrNull(i + 1)
-            if (t[i] == '.' && next != null && next.isDigit()) continue
-            val cond = t.substring(0, i).trim()
-            val rest = t.substring(i + 1).trim()
-            if (cond.isEmpty()) return t to ""       // 句子以句号开头，整句当条件
-            return cond to rest
-        }
-        return t to ""
+        val i = t.indexOf('。')
+        if (i < 0) return t to ""
+        val cond = t.substring(0, i).trim()
+        if (cond.isEmpty()) return t to ""           // 以句号开头，整句当条件
+        return cond to t.substring(i + 1).trim()
     }
 
     fun conditionOf(ask: String) = split(ask).first
-
-    fun speechOf(ask: String) = split(ask).second
 
     /** 句号后面那句：条件成立时让模型回答的问题 */
     fun questionOf(ask: String) = split(ask).second

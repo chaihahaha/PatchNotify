@@ -78,8 +78,8 @@ Java_com_example_patchnotify_NativeLlama_init(JNIEnv* env, jclass, jstring jmode
     mparams.use_gpu = false;
     mparams.print_timings = false;
     mparams.flash_attn_type = LLAMA_FLASH_ATTN_TYPE_ENABLED;
-    // 与旧 ONNX 的 smart_resize 对齐：495x173 的框约 75 个图像 token。
-    // 之前压到 64 会退成 52，首位 0 会偶发读成 9，所以放到 128（等于不压缩）。
+    // 495x173 的框约 75 个图像 token。之前压到 64 会退成 52，首位 0 会偶发读成 9，
+    // 所以放到 128（等于不压缩）。
     mparams.image_max_tokens = 128;
     mparams.n_threads = nThreads;
     g_mctx = mtmd_init_from_file(mmprojPath.c_str(), g_model, mparams);
