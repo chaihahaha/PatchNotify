@@ -33,10 +33,13 @@ object PatchShot {
     private var lastDailyAt = 0L
     @Volatile private var frameW = 0
     @Volatile private var frameH = 0
+    @Volatile var enabled = false
+        private set
     private var appVersion = ""
     private var device = ""
 
     fun init(base: File, version: String, deviceInfo: String) {
+        enabled = true
         root = File(base, "logs")
         dailyDir = File(root, "_daily")
         dailyDir?.mkdirs()

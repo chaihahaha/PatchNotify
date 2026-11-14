@@ -132,7 +132,7 @@ class MainActivity : AppCompatActivity() {
         val soc = if (android.os.Build.VERSION.SDK_INT >= 31) android.os.Build.SOC_MODEL else "?"
         pnLog("=== 启动 $BUILD_TAG 权限=${hasAllFilesAccess()} ===")
         pnLog("device: model=${android.os.Build.MODEL} soc=$soc hw=${android.os.Build.HARDWARE} abi=${android.os.Build.SUPPORTED_ABIS.firstOrNull()}")
-        try { PatchShot.init(java.io.File(logDir()), BUILD_TAG, "${android.os.Build.MODEL} / ${if (android.os.Build.VERSION.SDK_INT >= 31) android.os.Build.SOC_MODEL else "?"} / ${android.os.Build.VERSION.RELEASE}") } catch (e: Exception) { pnLog("截图目录初始化失败: ${e.message}") }
+        try { if (hasAllFilesAccess()) PatchShot.init(java.io.File(logDir()), BUILD_TAG, "${android.os.Build.MODEL} / ${if (android.os.Build.VERSION.SDK_INT >= 31) android.os.Build.SOC_MODEL else "?"} / ${android.os.Build.VERSION.RELEASE}") } catch (e: Exception) { pnLog("截图目录初始化失败: ${e.message}") }
         initTts()
         setupUi()
 
@@ -159,7 +159,16 @@ class MainActivity : AppCompatActivity() {
         }
         binding.btnCondition.setOnClickListener { pickPatchForCondition() }
         binding.btnCondition.setOnLongClickListener {
-            showLog()
+            val permItem = if (hasAllFilesAccess()) "文件访问权限：已授予" else "授予文件访问权限（可选）"
+            androidx.appcompat.app.AlertDialog.Builder(this)
+                .setItems(arrayOf("查看日志", "选择模型目录", permItem)) { _, i ->
+                    when (i) {
+                        0 -> showLog()
+                        1 -> pickModelDir(null)
+                        else -> if (!hasAllFilesAccess()) askAllFilesAccess()
+                    }
+                }
+                .show()
             true
         }
         binding.btnStartStop.setOnClickListener { toggleRunning() }
@@ -500,7 +509,7 @@ class MainActivity : AppCompatActivity() {
         PatchShot.setFrameSize(bitmap.width, bitmap.height)
 
         // 每天留一张整帧（未裁剪），方便日后确认这些裁剪图拍的是什么
-        if (PatchShot.dailyDue()) {
+        if (PatchShot.enabled && PatchShot.dailyDue()) {
             try {
                 val copy = bitmap.copy(Bitmap.Config.ARGB_8888, false)
                 if (copy != null) Thread { PatchShot.saveDaily(copy) }.start()
@@ -557,19 +566,6 @@ class MainActivity : AppCompatActivity() {
 
             // 唯一路径：本地 VLM 判断
             run {
-                if (!hasAllFilesAccess()) {
-                    val api = android.os.Build.VERSION.SDK_INT
-                    val mgr = if (api >= 30) android.os.Environment.isExternalStorageManager().toString() else "-"
-                    pnLog("local: 没有文件访问权限 api=$api isExternalStorageManager=$mgr")
-                    crop.recycle()
-                    runOnUiThread {
-                        setStatus("没有文件访问权限(API$api 管理所有文件=$mgr)")
-                        askAllFilesAccess()
-                    }
-                    bitmap.recycle()
-                    busy = false          // ★ 不释放的话整条帧循环会永久卡住
-                    return
-                }
                 if (localBusy) {
                     val stuck = SystemClock.elapsedRealtime() - localBusyAt
                     if (stuck > 60_000) {
@@ -620,7 +616,7 @@ class MainActivity : AppCompatActivity() {
                             if (nowDump - lastCropDumpAt > 5000) {
                                 lastCropDumpAt = nowDump
                                 try {
-                                    java.io.File(logDir(), "last_crop.jpg").outputStream().use {
+                                    if (sdOk) java.io.File(logDir(), "last_crop.jpg").outputStream().use {
                                         bmp.compress(android.graphics.Bitmap.CompressFormat.JPEG, 92, it)
                                     }
                                     pnLog("local: 已存 last_crop.jpg ${bmp.width}x${bmp.height}")
@@ -871,7 +867,7 @@ class MainActivity : AppCompatActivity() {
             .show()
     }
 
-    private fun pickModelDir(target: android.widget.EditText) {
+    private fun pickModelDir(target: android.widget.EditText?) {
         dirEdit = target
         try {
             startActivityForResult(
@@ -911,6 +907,11 @@ class MainActivity : AppCompatActivity() {
 
     /** 在常见位置里找模型目录，避免用户放对了却因为路径不同读不到 */
     private fun resolveModelDir(): String {
+        val priv = java.io.File(filesDir, "models")
+        if (!hasAllFilesAccess()) {
+            if (hasGguf(priv)) return priv.absolutePath
+            return localModelDir
+        }
         val root = android.os.Environment.getExternalStorageDirectory()
         val cands = listOf(
             java.io.File(localModelDir),
@@ -925,7 +926,6 @@ class MainActivity : AppCompatActivity() {
             if (hasGguf(it)) return it.absolutePath
         }
         // 最后才是安装包自带、释放到私有目录的那份
-        val priv = java.io.File(filesDir, "models")
         if (hasGguf(priv)) return priv.absolutePath
         return localModelDir
     }
@@ -969,9 +969,9 @@ class MainActivity : AppCompatActivity() {
      * （自带模型在私有目录，不能再把 2 GB 截图写进 /data）
      */
     private fun logDir(): String {
+        if (!sdOk) return filesDir.absolutePath
         val sd = java.io.File(android.os.Environment.getExternalStorageDirectory(), "patchnotify")
-        if (sd.isDirectory || sd.mkdirs()) return sd.absolutePath
-        return filesDir.absolutePath
+        return if (sd.isDirectory || sd.mkdirs()) sd.absolutePath else filesDir.absolutePath
     }
     private fun pnLog(msg: String) {
         android.util.Log.i("PatchNotify", msg)
@@ -999,13 +999,15 @@ class MainActivity : AppCompatActivity() {
 
     /** 本进程已经确认能写 /sdcard 一次之后就不再重复探测 */
     private var lastBarAt = 0L
+    @Volatile private var sdOk = false          // 能读写 /sdcard/patchnotify
     private var storageOk = false
 
     private fun hasAllFilesAccess(): Boolean {
-        if (storageOk) return true
+        if (storageOk) { sdOk = true; return true }
         if (android.os.Build.VERSION.SDK_INT >= 30 &&
             android.os.Environment.isExternalStorageManager()) {
             storageOk = true
+            sdOk = true
             return true
         }
         if (android.os.Build.VERSION.SDK_INT < 30 &&

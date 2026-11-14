@@ -186,6 +186,8 @@ app/src/main/assets/mmproj/mmproj-Q8_0.gguf            345 MiB（从 F16 量化�
 - 目标文件已存在且大小正确 → 跳过，重装/升级不会重复拷 1.2 GB
 - 普通构建的 assets 里没有这些文件，`bundled()` 返回 false，整段逻辑不执行
 - 生成资产：`./scripts/make-model-assets.sh`
+- **文件访问权限是可选的**：没授权时只读私有目录里的模型，不扫 sdcard，不写截图，
+  `app.log` 落私有目录；推理和判断完全不受影响
 - APK 约 1.2 GB；安装要先复制进 `/data/app`，首次启动再释放一份到私有目录
 
 为什么不压成 .tenz：IQ2 那种查表量化 tenz 没有模型，820 MiB 只省到 782 MiB（4.6%），
