@@ -25,12 +25,19 @@ object Vlm {
     private const val YES_NO_GBNF = "root ::= \"是\" | \"否\""
 
     /**
-     * 允许思考时的结构化语法：强制先输出完整的 think 块（20~400 字之间），
-     * 再输出是/否。这样思考过程一定有闭合标签，不会出现「思维链被截断当成答案」。
+     * 允许思考时的结构化语法：think 块最多 THINK_MAX_CHARS 个字符，之后必须闭合标签并输出是/否。
+     *
+     * 注意 GBNF 数的是字符不是 token，中文大约 1 字 ≈ 1 token，
+     * 400 字对应 300~400 token 左右。调上限改 THINK_MAX_CHARS 即可。
+     *
+     * THINK_MIN_CHARS 只是防止模型直接跳过思考（实测设为 0 时它会吐一个空 think 块
+     * 然后立刻下结论，等于没思考），不是要求它必须写满这么多。
      */
-    private const val THINK_YES_NO_GBNF =
-        "root ::= \"<think>\" body \"</think>\" (\"是\" | \"否\")\n" +
-        "body ::= [^<]{20,400}"
+    private const val THINK_MAX_CHARS = 400
+    private const val THINK_MIN_CHARS = 20
+    private val THINK_YES_NO_GBNF: String
+        get() = "root ::= \"<think>\" body \"</think>\" (\"是\" | \"否\")\n" +
+                "body ::= [^<]{$THINK_MIN_CHARS,${THINK_MAX_CHARS}}"
 
 
     private var ready = false
