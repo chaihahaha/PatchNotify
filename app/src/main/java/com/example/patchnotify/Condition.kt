@@ -25,6 +25,15 @@ object Condition {
     /** 句号后面那句：条件成立时让模型回答的问题 */
     fun questionOf(ask: String) = split(ask).second
 
+    /**
+     * 允许思考时的第一段：要求它先把看到的东西写出来再下结论。
+     * 不写死具体领域（数字/文字/形状都适用），只要求「描述」。
+     */
+    fun thinkPrompt(ask: String): String {
+        val cond = conditionOf(ask)
+        return "看画面回答问题：$cond。先在思考里描述你看到的内容，再给出「是」或「否」的结论。"
+    }
+
     /** 第一段：封闭问句，只允许回答是/否 */
     fun prompt(ask: String): String {
         val cond = conditionOf(ask)

@@ -71,7 +71,11 @@ object Vlm {
         // 不再按回答类型卡 token 数：生成到 EOG / <|im_end|> 自然就停，
         // 上限只用来兜住跑飞的输出（受 n_ctx=4096 约束）
         val budget = 2048
-        val promptText = if (openAnswer) Condition.questionPrompt(ask) else Condition.prompt(ask)
+        val promptText = when {
+            openAnswer -> Condition.questionPrompt(ask)
+            allowThink -> Condition.thinkPrompt(ask)   // 先描述再判断，避免把预算花在复述题干上
+            else -> Condition.prompt(ask)
+        }
         // 是/否判断用 GBNF 把输出钉死：
         // 不思考 -> 只能是「是」或「否」；思考 -> 必须走完整的 think 块再给结论，
         // 思考过程也一并结构化，永远不会出现「标签没闭合、思维链被当答案」。
