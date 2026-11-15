@@ -34,7 +34,7 @@ object Vlm {
      * GBNF 数的是字符不是 token（中文约 1 字 ≈ 1 token）。
      */
     private const val THINK_MIN_CHARS = 5
-    private const val THINK_MAX_CHARS = 40
+    private const val THINK_MAX_CHARS = 120
     private val THINK_YES_NO_GBNF: String
         get() = "root ::= \"<think>\" body \"</think>\" (\"是\" | \"否\")\n" +
                 "body ::= [^< \\t\\n\\r] [^<]{${THINK_MIN_CHARS - 1},${THINK_MAX_CHARS - 1}}"
