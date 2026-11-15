@@ -99,7 +99,7 @@ class MainActivity : AppCompatActivity() {
 
     companion object {
         /** 每次发版改这里，屏幕上会显示，便于确认装的是哪个包 */
-        const val BUILD_TAG = "v95-perm"
+        const val BUILD_TAG = "v96-simple"
         private const val REQ_PERMS = 1001
         private const val FRAME_INTERVAL_MS = 250L      // 4 fps
         private const val ROUND_BUDGET_MS = 200L
@@ -168,10 +168,9 @@ class MainActivity : AppCompatActivity() {
         binding.btnCondition.setOnLongClickListener {
             val permItem = if (hasAllFilesAccess()) "文件访问权限：已授予" else "授予文件访问权限（可选）"
             androidx.appcompat.app.AlertDialog.Builder(this)
-                .setItems(arrayOf("查看日志", "选择模型目录", permItem)) { _, i ->
+                .setItems(arrayOf("查看日志", permItem)) { _, i ->
                     when (i) {
                         0 -> showLog()
-                        1 -> pickModelDir(null)
                         else -> if (!hasAllFilesAccess()) askAllFilesAccess()
                     }
                 }
@@ -309,30 +308,6 @@ class MainActivity : AppCompatActivity() {
         }
         layout.addView(thinkBox)
 
-        layout.addView(TextView(this).apply {
-            text = "本地模型目录"
-            textSize = 11f
-            setTextColor(0xFF888888.toInt())
-        })
-        val dirInput = EditText(this).apply {
-            setText(localModelDir)
-            textSize = 13f
-            typeface = Typeface.MONOSPACE
-        }
-        layout.addView(dirInput)
-        layout.addView(Button(this).apply {
-            text = "检测模型目录"
-            setOnClickListener { checkModelDir(dirInput.text.toString().trim()) }
-        })
-        layout.addView(Button(this).apply {
-            text = "选择文件夹…"
-            setOnClickListener { pickModelDir(dirInput) }
-        })
-        layout.addView(Button(this).apply {
-            text = "导入模型到 App 内（不需要权限）"
-            setOnClickListener { importModelDir(dirInput) }
-        })
-
         // 内容比屏幕高，必须包一层 ScrollView，否则下半截（模型目录/导入按钮）够不到
         val scroll = android.widget.ScrollView(this).apply {
             addView(layout, android.widget.FrameLayout.LayoutParams(
@@ -361,10 +336,6 @@ class MainActivity : AppCompatActivity() {
                 p.ask = ask
                 p.think = thinkBox.isChecked
                 p.updatedAt = System.currentTimeMillis()
-                localModelDir = dirInput.text.toString().trim().trimEnd('/')
-                localReady = false
-                getSharedPreferences("patchnotify", MODE_PRIVATE).edit()
-                    .putString("modelDir", localModelDir).apply()
                 p.monitor = true
                 nlState.remove(p.id)
                 nlRearmAt.remove(p.id)
@@ -618,7 +589,7 @@ class MainActivity : AppCompatActivity() {
                             pnLog("local: probe → $st")
                             localReady = st == "ok" || st.startsWith("ok ")
                             if (!localReady) {
-                                r = if (st.startsWith("ERR:")) st + "（点“设条件”→检测模型目录）"
+                                r = if (st.startsWith("ERR:")) st
                                     else "模型加载失败：$st"
                             }
                         }
@@ -809,124 +780,6 @@ class MainActivity : AppCompatActivity() {
                 .setPositiveButton("知道了", null)
                 .show()
         }
-    }
-
-    private fun importModelDir(target: android.widget.EditText) {
-        dirEdit = target
-        try {
-            startActivityForResult(
-                android.content.Intent(android.content.Intent.ACTION_OPEN_DOCUMENT_TREE), 2002)
-        } catch (e: Throwable) {
-            Toast.makeText(this, "这台机器没有文件夹选择器", Toast.LENGTH_LONG).show()
-        }
-    }
-
-    /** 走 SAF 把选中目录整棵复制进 App 私有目录，完全不需要「所有文件访问」 */
-    private fun doImport(uri: android.net.Uri, target: android.widget.EditText?) {
-        Thread {
-            try {
-                val root = java.io.File(filesDir, "models/qwen_2b")
-                if (root.exists()) root.deleteRecursively()
-                root.mkdirs()
-                val tree = androidx.documentfile.provider.DocumentFile.fromTreeUri(this, uri)
-                if (tree == null) { runOnUiThread { setStatus("无法读取所选文件夹") }; return@Thread }
-                var n = 0; var bytes = 0L
-                fun walk(dir: androidx.documentfile.provider.DocumentFile, out: java.io.File) {
-                    out.mkdirs()
-                    for (f in dir.listFiles()) {
-                        if (f.isDirectory) walk(f, java.io.File(out, f.name ?: ""))
-                        else {
-                            val name = f.name ?: continue
-                            val dst = java.io.File(out, name)
-                            contentResolver.openInputStream(f.uri)?.use { ins ->
-                                dst.outputStream().use { outs -> bytes += ins.copyTo(outs) }
-                            }
-                            n++
-                            if (n % 2 == 0) runOnUiThread { setStatus("导入中 $n 个文件 ${bytes / 1048576} MB") }
-                        }
-                    }
-                }
-                walk(tree, root)
-                pnLog("import: $n files, ${bytes / 1048576} MB -> ${root.absolutePath}")
-                val okDir = if (hasGguf(root)) root
-                            else root.listFiles()?.firstOrNull { it.isDirectory && hasGguf(it) } ?: root
-                runOnUiThread {
-                    target?.setText(okDir.absolutePath)
-                    localModelDir = okDir.absolutePath
-                    localReady = false
-                    getSharedPreferences("patchnotify", MODE_PRIVATE).edit()
-                        .putString("modelDir", localModelDir).apply()
-                    setStatus("导入完成：$n 个文件 ${bytes / 1048576} MB")
-                    checkModelDir(okDir.absolutePath)
-                }
-            } catch (e: Throwable) {
-                pnLog("import 失败 " + android.util.Log.getStackTraceString(e).take(800))
-                runOnUiThread { setStatus("导入失败：" + (e.message ?: "")) }
-            }
-        }.start()
-    }
-
-    private var dirEdit: android.widget.EditText? = null
-
-    /** 检查模型目录，缺什么报什么 */
-    private fun checkModelDir(pathIn: String) {
-        val path = pathIn.trim().trimEnd('/')
-        if (path.isEmpty()) { setStatus("模型目录为空"); return }
-        val dir = java.io.File(path)
-        val files = dir.listFiles()?.map { it.name } ?: emptyList()
-        val hasModel = files.any { it.endsWith(".gguf") && !it.startsWith("mmproj") }
-        val hasMmproj = files.any { it.startsWith("mmproj") }
-        val need = listOf("模型 .gguf", "mmproj .gguf")
-        val missing = when {
-            !hasModel -> listOf(need[0])
-            !hasMmproj -> listOf(need[1])
-            else -> emptyList()
-        }
-        val msg = when {
-            !dir.isDirectory -> "目录不存在：$path"
-            missing.isEmpty() -> "模型齐全（${files.size} 个文件）\n$dir"
-            else -> "缺 ${missing.size} 个文件：\n" + missing.joinToString("\n") +
-                    "\n当前目录有：\n" + files.take(8).joinToString("\n")
-        }
-        pnLog("check model dir: $path → " + if (missing.isEmpty()) "OK" else "missing=$missing")
-        setStatus(msg)
-        androidx.appcompat.app.AlertDialog.Builder(this)
-            .setTitle("模型目录检测")
-            .setMessage(msg)
-            .setPositiveButton("知道了", null)
-            .show()
-    }
-
-    private fun pickModelDir(target: android.widget.EditText?) {
-        dirEdit = target
-        try {
-            startActivityForResult(
-                android.content.Intent(android.content.Intent.ACTION_OPEN_DOCUMENT_TREE), 2001)
-        } catch (e: Throwable) {
-            Toast.makeText(this, "这台机器没有文件夹选择器", Toast.LENGTH_LONG).show()
-        }
-    }
-
-    override fun onActivityResult(requestCode: Int, resultCode: Int, data: android.content.Intent?) {
-        super.onActivityResult(requestCode, resultCode, data)
-        if (resultCode != RESULT_OK) return
-        val uri = data?.data ?: return
-        if (requestCode == 2002) { doImport(uri, dirEdit); return }
-        if (requestCode != 2001) return
-        val path = runCatching {
-            val docId = android.provider.DocumentsContract.getTreeDocumentId(uri)
-            val parts = docId.split(":", limit = 2)
-            val root = if (parts[0].equals("primary", true)) {
-                android.os.Environment.getExternalStorageDirectory().absolutePath
-            } else {
-                "/storage/" + parts[0]
-            }
-            (root + "/" + parts.getOrElse(1) { "" }).trimEnd('/')
-        }.getOrNull()
-        if (path == null) { Toast.makeText(this, "无法转换成路径", Toast.LENGTH_LONG).show(); return }
-        pnLog("选择目录: $path")
-        dirEdit?.setText(path)
-        checkModelDir(path)
     }
 
     /** 目录里有非 mmproj 的 .gguf 才算模型目录 */
