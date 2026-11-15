@@ -24,6 +24,14 @@ object Vlm {
     /** 只允许输出「是」或「否」 */
     private const val YES_NO_GBNF = "root ::= \"是\" | \"否\""
 
+    /**
+     * 允许思考时的结构化语法：强制先输出完整的 think 块（20~400 字之间），
+     * 再输出是/否。这样思考过程一定有闭合标签，不会出现「思维链被截断当成答案」。
+     */
+    private const val THINK_YES_NO_GBNF =
+        "root ::= \"<think>\" body \"</think>\" (\"是\" | \"否\")\n" +
+        "body ::= [^<]{20,400}"
+
 
     private var ready = false
     private var modelDirCached = ""
@@ -58,9 +66,14 @@ object Vlm {
         // 上限只用来兜住跑飞的输出（受 n_ctx=4096 约束）
         val budget = 2048
         val promptText = if (openAnswer) Condition.questionPrompt(ask) else Condition.prompt(ask)
-        // 是/否判断用 GBNF 把输出钉死在这两个字上：模型没法吐别的，
-        // 解析也不会再因为多吐一句解释而失败。思考模式不能用（思维链不满足语法）。
-        val grammar = if (!allowThink && !openAnswer) YES_NO_GBNF else null
+        // 是/否判断用 GBNF 把输出钉死：
+        // 不思考 -> 只能是「是」或「否」；思考 -> 必须走完整的 think 块再给结论，
+        // 思考过程也一并结构化，永远不会出现「标签没闭合、思维链被当答案」。
+        val grammar = when {
+            openAnswer -> null
+            allowThink -> THINK_YES_NO_GBNF
+            else -> YES_NO_GBNF
+        }
         val out = NativeLlama.infer(rgb, w, h, promptText, budget, allowThink, grammar).trim()
         // 思考没闭合 = 被 maxTok 截断，不能拿去判断
         if (out.contains("<think>") && !out.contains("</think>")) return "ERR:THINK_TRUNC"

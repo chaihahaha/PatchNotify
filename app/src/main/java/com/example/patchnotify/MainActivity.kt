@@ -99,7 +99,7 @@ class MainActivity : AppCompatActivity() {
 
     companion object {
         /** 每次发版改这里，屏幕上会显示，便于确认装的是哪个包 */
-        const val BUILD_TAG = "v97-gbnf"
+        const val BUILD_TAG = "v98-think"
         private const val REQ_PERMS = 1001
         private const val FRAME_INTERVAL_MS = 250L      // 4 fps
         private const val ROUND_BUDGET_MS = 200L
@@ -302,7 +302,7 @@ class MainActivity : AppCompatActivity() {
         layout.addView(input)
 
         val thinkBox = android.widget.CheckBox(this).apply {
-            text = "允许模型先思考（开放式判断更准，每次多花约 10 秒）"
+            text = "允许模型先思考（先输出 think 块推理，再给是/否；每次多花约 10 秒）"
             textSize = 12f
             isChecked = p.think
         }
