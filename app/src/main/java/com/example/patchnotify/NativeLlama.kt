@@ -33,8 +33,8 @@ object Vlm {
      * THINK_MIN_CHARS 只是防止模型直接跳过思考（实测设为 0 时它会吐一个空 think 块
      * 然后立刻下结论，等于没思考），不是要求它必须写满这么多。
      */
-    private const val THINK_MAX_CHARS = 400
-    private const val THINK_MIN_CHARS = 20
+    private const val THINK_MAX_CHARS = 20
+    private const val THINK_MIN_CHARS = 1
     private val THINK_YES_NO_GBNF: String
         get() = "root ::= \"<think>\" body \"</think>\" (\"是\" | \"否\")\n" +
                 "body ::= [^<]{$THINK_MIN_CHARS,${THINK_MAX_CHARS}}"
