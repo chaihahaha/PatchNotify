@@ -16,11 +16,14 @@ object NativeLlama {
     external fun setLogPath(path: String)
     external fun init(modelPath: String, mmprojPath: String, nThreads: Int): String
     external fun infer(rgb: ByteArray, w: Int, h: Int, prompt: String, maxTok: Int,
-                     allowThink: Boolean): String
+                       allowThink: Boolean, grammar: String?): String
     external fun release()
 }
 
 object Vlm {
+    /** 只允许输出「是」或「否」 */
+    private const val YES_NO_GBNF = "root ::= \"是\" | \"否\""
+
 
     private var ready = false
     private var modelDirCached = ""
@@ -55,7 +58,10 @@ object Vlm {
         // 上限只用来兜住跑飞的输出（受 n_ctx=4096 约束）
         val budget = 2048
         val promptText = if (openAnswer) Condition.questionPrompt(ask) else Condition.prompt(ask)
-        val out = NativeLlama.infer(rgb, w, h, promptText, budget, allowThink).trim()
+        // 是/否判断用 GBNF 把输出钉死在这两个字上：模型没法吐别的，
+        // 解析也不会再因为多吐一句解释而失败。思考模式不能用（思维链不满足语法）。
+        val grammar = if (!allowThink && !openAnswer) YES_NO_GBNF else null
+        val out = NativeLlama.infer(rgb, w, h, promptText, budget, allowThink, grammar).trim()
         // 思考没闭合 = 被 maxTok 截断，不能拿去判断
         if (out.contains("<think>") && !out.contains("</think>")) return "ERR:THINK_TRUNC"
         return out

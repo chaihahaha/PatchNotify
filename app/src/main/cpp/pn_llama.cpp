@@ -100,7 +100,7 @@ Java_com_example_patchnotify_NativeLlama_setLogPath(JNIEnv* env, jclass, jstring
 extern "C" JNIEXPORT jstring JNICALL
 Java_com_example_patchnotify_NativeLlama_infer(JNIEnv* env, jclass, jbyteArray jrgb,
                                              jint w, jint h, jstring jprompt, jint maxTok,
-                                             jboolean allowThink) {
+                                             jboolean allowThink, jstring jgrammar) {
     std::lock_guard<std::mutex> lk(g_mu);
     if (!g_ctx || !g_mctx || !g_vocab) return env->NewStringUTF("ERR:not_init");
 
@@ -149,6 +149,13 @@ Java_com_example_patchnotify_NativeLlama_infer(JNIEnv* env, jclass, jbyteArray j
     pnLog("cpp: prefill=%lldms tokens_in=%d", (long long)((tPre1-tTok1)/1000), (int)n_past);
 
     llama_sampler* smpl = llama_sampler_chain_init(llama_sampler_chain_default_params());
+    // GBNF 语法约束放在 greedy 前面：先把候选 token 裁到语法允许的集合，再挑最大概率的。
+    // 注意思考模式下不能用（思维链不满足 "是|否" 的语法），调用方已经保证不这么传。
+    std::string grammar = jgrammar ? jstr(env, jgrammar) : std::string();
+    if (!grammar.empty()) {
+        llama_sampler_chain_add(smpl, llama_sampler_init_grammar(g_vocab, grammar.c_str(), "root"));
+        pnLog("cpp: grammar=%s", grammar.c_str());
+    }
     llama_sampler_chain_add(smpl, llama_sampler_init_greedy());
 
     std::string out;
