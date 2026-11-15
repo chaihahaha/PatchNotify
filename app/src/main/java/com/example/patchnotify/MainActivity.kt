@@ -99,7 +99,7 @@ class MainActivity : AppCompatActivity() {
 
     companion object {
         /** 每次发版改这里，屏幕上会显示，便于确认装的是哪个包 */
-        const val BUILD_TAG = "v94-q4"
+        const val BUILD_TAG = "v95-perm"
         private const val REQ_PERMS = 1001
         private const val FRAME_INTERVAL_MS = 250L      // 4 fps
         private const val ROUND_BUDGET_MS = 200L
@@ -139,6 +139,13 @@ class MainActivity : AppCompatActivity() {
         binding.buildText.text = "PatchNotify $BUILD_TAG · 点这里看日志"
         binding.buildText.setOnClickListener { showLog() }
         ensurePermissions()
+        // 首次使用自动问一次权限（可选，不拦推理）。等相机权限弹窗落定再弹，避免两个对话框打架
+        binding.root.postDelayed({
+            if (!storageAskedThisRun && !hasAllFilesAccess()) {
+                storageAskedThisRun = true
+                askAllFilesAccess()
+            }
+        }, 2500)
 
         // 调试入口：adb shell am start -n com.example.patchnotify/.MainActivity --es testImage /sdcard/x.jpg
         intent?.getStringExtra("testImage")?.let { path ->
@@ -1064,13 +1071,18 @@ class MainActivity : AppCompatActivity() {
     }
 
     private var askingAccess = false
+    private var storageAskedThisRun = false
     private fun askAllFilesAccess() {
         if (askingAccess) return
         askingAccess = true
-        val msg = "本地识别需要读取 /sdcard/patchnotify 里的模型文件。\n\n" +
-            "下一步会打开系统设置，请找到「PatchNotify」并打开「允许访问所有文件管理」或「所有文件访问权限」。"
+        val msg = "授予「所有文件访问权限」后可以：\n" +
+            "· 用你放在 /sdcard/patchnotify 里的自定义模型\n" +
+            "· 把截图和日志写到 sdcard（方便导出查看）\n\n" +
+            "不授予也能正常推理和判断——会使用应用私有目录里的内置模型，" +
+            "只是不写截图。\n\n" +
+            "下一步会打开系统设置，请找到「PatchNotify」并打开「允许访问所有文件管理」。"
         androidx.appcompat.app.AlertDialog.Builder(this)
-            .setTitle("需要文件访问权限")
+            .setTitle("文件访问权限（可选）")
             .setMessage(msg)
             .setPositiveButton("去设置") { _, _ ->
                 askingAccess = false
@@ -1087,7 +1099,7 @@ class MainActivity : AppCompatActivity() {
                         android.provider.Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION))
                 }
             }
-            .setNegativeButton("取消") { _, _ -> askingAccess = false }
+            .setNegativeButton("稍后再说") { _, _ -> askingAccess = false }
             .show()
     }
 
@@ -1251,6 +1263,10 @@ class MainActivity : AppCompatActivity() {
         binding.btnStartStop.text = if (running) getString(R.string.btn_stop) else getString(R.string.btn_start)
         resetDetection()
         if (running) {
+            if (!storageAskedThisRun && !hasAllFilesAccess()) {
+                storageAskedThisRun = true
+                askAllFilesAccess()
+            }
             setStatus("监控中 · 每 0.25 秒取一帧，逐个区域判断")
         } else {
             alerting = false
