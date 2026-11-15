@@ -25,20 +25,19 @@ object Vlm {
     private const val YES_NO_GBNF = "root ::= \"是\" | \"否\""
 
     /**
-     * 允许思考时的结构化语法：think 块最多 THINK_MAX_CHARS 个字符，之后必须闭合标签并输出是/否。
+     * 允许思考时的结构化语法：
+     *   think 段总长 5~40 字，且**第一个字符不能是空格/制表/换行**。
      *
-     * 注意 GBNF 数的是字符不是 token，中文大约 1 字 ≈ 1 token，
-     * 400 字对应 300~400 token 左右。调上限改 THINK_MAX_CHARS 即可。
+     * 后一条是必须的：只写 {5,40} 的话，模型会先用「空行 + 空格」填满长度再直接下结论，
+     * 时间花了但根本没思考。强制首字符非空白后，它只能老老实实写字。
      *
-     * THINK_MIN_CHARS 只是防止模型直接跳过思考（实测设为 0 时它会吐一个空 think 块
-     * 然后立刻下结论，等于没思考），不是要求它必须写满这么多。
+     * GBNF 数的是字符不是 token（中文约 1 字 ≈ 1 token）。
      */
-    private const val THINK_MAX_CHARS = 20
-    private const val THINK_MIN_CHARS = 1
+    private const val THINK_MIN_CHARS = 5
+    private const val THINK_MAX_CHARS = 40
     private val THINK_YES_NO_GBNF: String
         get() = "root ::= \"<think>\" body \"</think>\" (\"是\" | \"否\")\n" +
-                "body ::= [^<]{$THINK_MIN_CHARS,${THINK_MAX_CHARS}}"
-
+                "body ::= [^< \\t\\n\\r] [^<]{${THINK_MIN_CHARS - 1},${THINK_MAX_CHARS - 1}}"
 
     private var ready = false
     private var modelDirCached = ""
