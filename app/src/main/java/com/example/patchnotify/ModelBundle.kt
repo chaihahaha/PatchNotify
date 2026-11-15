@@ -22,7 +22,7 @@ object ModelBundle {
     private data class Item(val asset: String, val name: String, val bytes: Long)
 
     private val ITEMS = listOf(
-        Item("model/Qwen3.5-2B-UD-IQ2_M.gguf", "Qwen3.5-2B-UD-IQ2_M.gguf", 859_857_152L),
+        Item("model/Qwen3.5-2B-Q4_0.gguf", "Qwen3.5-2B-Q4_0.gguf", 1_214_873_856L),
         Item("mmproj/mmproj-Q8_0.gguf", "mmproj-Q8_0.gguf", 361_518_784L)
     )
 

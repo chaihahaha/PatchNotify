@@ -175,7 +175,7 @@ CPU 版本还带来两个副作用：不占 GPU，相机预览不卡；没有 Vu
 默认 APK 不含权重，用户自己导入模型。想做成装完就能用的版本，把 GGUF 放进 assets：
 
 ```
-app/src/main/assets/model/Qwen3.5-2B-UD-IQ2_M.gguf     820 MiB
+app/src/main/assets/model/Qwen3.5-2B-Q4_0.gguf         1159 MiB
 app/src/main/assets/mmproj/mmproj-Q8_0.gguf            345 MiB（从 F16 量化，637 → 345）
 ```
 
@@ -188,8 +188,8 @@ app/src/main/assets/mmproj/mmproj-Q8_0.gguf            345 MiB（从 F16 量化�
 - 生成资产：`./scripts/make-model-assets.sh`
 - **文件访问权限是可选的**：没授权时只读私有目录里的模型，不扫 sdcard，不写截图，
   `app.log` 落私有目录；推理和判断完全不受影响
-- APK 约 1.2 GB；安装要先复制进 `/data/app`，首次启动再释放一份到私有目录
+- APK 约 1.5 GB；安装要先复制进 `/data/app`，首次启动再释放一份到私有目录
 
-为什么不压成 .tenz：IQ2 那种查表量化 tenz 没有模型，820 MiB 只省到 782 MiB（4.6%），
-而 llama.cpp 只接受文件路径、没法直接 mmap APK 里的 asset，拷贝本来就要做一次，
-再用 tenz 只是多写 800 MB 换 38 MB 体积，不值。
+为什么用 Q4_0 而不是更小的 IQ2_M：repack / KleidiAI 只覆盖 Q4_0、Q4_K、Q2_K、Q5_K、Q6_K、Q8_0，
+IQ2_M 走通用 iq2 内核。同一份编译下实测 decode 14.65 vs 29.40 t/s（2 倍差）。
+也不压成 .tenz：llama.cpp 只接受文件路径、没法直接 mmap APK 里的 asset，拷贝本来就要做一次。

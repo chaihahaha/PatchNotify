@@ -4,7 +4,7 @@
 #   ./scripts/make-model-assets.sh [模型 gguf] [mmproj gguf]
 #
 # 产物：
-#   app/src/main/assets/model/Qwen3.5-2B-UD-IQ2_M.gguf   直接放原始 gguf
+#   app/src/main/assets/model/Qwen3.5-2B-Q4_0.gguf       直接放原始 gguf
 #   app/src/main/assets/mmproj/mmproj-Q8_0.gguf          mmproj 从 F16 量化到 Q8_0
 #
 # 不放 .tenz：IQ2 张量 tenz 压缩不了（实测只省 4.6%），首启还要多写一遍，
@@ -12,7 +12,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-MODEL=${1:-$HOME/hermes-share/ggufs2b/Qwen3.5-2B-UD-IQ2_M.gguf}
+MODEL=${1:-$HOME/hermes-share/ggufs2b/Qwen3.5-2B-Q4_0.gguf}
 MMPROJ=${2:-$HOME/hermes-share/ggufs2b/mmproj-F16.gguf}
 BUILD=.tenz-build
 mkdir -p "$BUILD" app/src/main/assets/model app/src/main/assets/mmproj
