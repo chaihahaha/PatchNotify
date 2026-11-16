@@ -104,6 +104,7 @@
                 android:layout_height="52dp"
                 android:layout_marginStart="8dp"
                 android:background="@drawable/btn_factory"
+                android:backgroundTint="@null"
                 android:contentDescription="@string/btn_torch_off"
                 android:padding="10dp"
                 android:scaleType="centerInside"

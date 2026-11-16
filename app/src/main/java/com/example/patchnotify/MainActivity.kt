@@ -435,6 +435,7 @@ class MainActivity : AppCompatActivity() {
                 setHintTextColor(0xFF555555.toInt())
                 gravity = Gravity.TOP
                 setBackgroundResource(R.drawable.input_factory)
+                backgroundTintList = null
                 inputType = android.text.InputType.TYPE_CLASS_TEXT or
                         android.text.InputType.TYPE_TEXT_FLAG_MULTI_LINE
                 setPadding(12, 10, 12, 10)
@@ -458,6 +459,7 @@ class MainActivity : AppCompatActivity() {
                 setHintTextColor(0xFF555555.toInt())
                 gravity = Gravity.TOP
                 setBackgroundResource(R.drawable.input_factory)
+                backgroundTintList = null
                 inputType = android.text.InputType.TYPE_CLASS_TEXT or
                         android.text.InputType.TYPE_TEXT_FLAG_MULTI_LINE
                 setPadding(12, 10, 12, 10)
