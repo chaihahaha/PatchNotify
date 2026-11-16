@@ -39,9 +39,8 @@ object Vlm {
         get() = "root ::= \"<think>\" body \"</think>\" (\"是\" | \"否\")\n" +
                 "body ::= [^< \\t\\n\\r] [^<]{${THINK_MIN_CHARS - 1},${THINK_MAX_CHARS - 1}}"
 
-    private var ready = false
-    private var modelDirCached = ""
-    var lastModelName = ""
+    @Volatile private var ready = false
+    @Volatile var lastModelName = ""
 
     // 实测 0.8B 无论怎么量化都会读错首位，只认 2B
     private val MODEL_CANDIDATES = listOf(
@@ -62,9 +61,9 @@ object Vlm {
     private fun firstExisting(dir: String, names: List<String>): File? =
         names.map { File(dir, it) }.firstOrNull { it.exists() }
 
-    /** 把一句话条件交给模型，返回它的原话（应是/否） */
+    /** 判断条件 + 命中后的追问，返回模型原话（判断时是/否，追问时是答案） */
     fun ask(
-        rgb: ByteArray, w: Int, h: Int, ask: String,
+        rgb: ByteArray, w: Int, h: Int, condition: String, question: String,
         allowThink: Boolean = false, openAnswer: Boolean = false
     ): String {
         if (!ready) return "ERR:模型未加载"
@@ -72,9 +71,9 @@ object Vlm {
         // 上限只用来兜住跑飞的输出（受 n_ctx=4096 约束）
         val budget = 2048
         val promptText = when {
-            openAnswer -> Condition.questionPrompt(ask)
-            allowThink -> Condition.thinkPrompt(ask)   // 先描述再判断，避免把预算花在复述题干上
-            else -> Condition.prompt(ask)
+            openAnswer -> Condition.questionPrompt(condition, question)
+            allowThink -> Condition.thinkPrompt(condition)   // 先描述再判断，避免把预算花在复述题干上
+            else -> Condition.prompt(condition)
         }
         // 是/否判断用 GBNF 把输出钉死：
         // 不思考 -> 只能是「是」或「否」；思考 -> 必须走完整的 think 块再给结论，
@@ -90,6 +89,7 @@ object Vlm {
         return out
     }
 
+    @Synchronized
     fun probe(dir: String): String {
         val model = firstExisting(dir, MODEL_CANDIDATES)
         val mmproj = firstExisting(dir, MMPROJ_CANDIDATES)
@@ -107,7 +107,6 @@ object Vlm {
         val r = NativeLlama.init(model.absolutePath, mmproj.absolutePath, threads)
         lastModelName = model.name
         ready = r == "ok"
-        modelDirCached = dir
         return if (ready) "ok threads=$threads model=$lastModelName" else r
     }
 }

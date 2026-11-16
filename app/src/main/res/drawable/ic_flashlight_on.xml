@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <!-- 黄色、带光线：手电筒常亮 -->
+    <path
+        android:fillColor="#FFFFB300"
+        android:pathData="M8,3h8v4l-2,3v12h-4V10L8,7z" />
+    <path
+        android:fillColor="#FFFFB300"
+        android:pathData="M10,1h4v2h-4z" />
+    <path
+        android:strokeColor="#FFFFB300"
+        android:strokeWidth="1.6"
+        android:fillColor="@android:color/transparent"
+        android:strokeLineCap="round"
+        android:pathData="M2,3l3,3M22,3l-3,3M2,10h3M22,10h-3" />
+    <path
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="1"
+        android:fillColor="@android:color/transparent"
+        android:pathData="M9,6h6" />
+</vector>

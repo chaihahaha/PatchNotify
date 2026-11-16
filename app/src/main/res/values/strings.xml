@@ -5,5 +5,7 @@
     <string name="btn_start">开始监控</string>
     <string name="btn_stop">停止监控</string>
     <string name="btn_stop_alert">停止播报</string>
-    <string name="hint_drag">用手指在画面上拖出要监控的区域</string>
+    <string name="btn_torch_off">手电筒：关</string>
+    <string name="btn_torch_on">手电筒：开</string>
+    <string name="btn_torch_none">本机无闪光灯</string>
 </resources>

@@ -28,6 +28,17 @@ static void pnLog(const char* fmt, ...) {
     if (g_logPath.empty()) return;
     FILE* f = fopen(g_logPath.c_str(), "a");
     if (!f) return;
+    // 长时间监控会不断写 native.log，超过 2 MB 轮转一次，避免无限增长
+    fseek(f, 0, SEEK_END);
+    long sz = ftell(f);
+    if (sz > 2L * 1024 * 1024) {
+        fclose(f);
+        std::string oldPath = g_logPath + ".1";
+        remove(oldPath.c_str());
+        rename(g_logPath.c_str(), oldPath.c_str());
+        f = fopen(g_logPath.c_str(), "a");
+        if (!f) return;
+    }
     va_list ap; va_start(ap, fmt);
     vfprintf(f, fmt, ap);
     va_end(ap);
@@ -153,12 +164,16 @@ Java_com_example_patchnotify_NativeLlama_infer(JNIEnv* env, jclass, jbyteArray j
     // 注意思考模式下不能用（思维链不满足 "是|否" 的语法），调用方已经保证不这么传。
     std::string grammar = jgrammar ? jstr(env, jgrammar) : std::string();
     if (!grammar.empty()) {
-        llama_sampler_chain_add(smpl, llama_sampler_init_grammar(g_vocab, grammar.c_str(), "root"));
+        llama_sampler* gs = llama_sampler_init_grammar(g_vocab, grammar.c_str(), "root");
+        if (!gs) {
+            llama_sampler_free(smpl);
+            return env->NewStringUTF("ERR:grammar");
+        }
+        llama_sampler_chain_add(smpl, gs);
         pnLog("cpp: grammar=%s", grammar.c_str());
     }
     llama_sampler_chain_add(smpl, llama_sampler_init_greedy());
 
-    std::string out;
     std::string all;
     int nGen = 0;
     for (int i = 0; i < maxTok; i++) {
@@ -175,10 +190,10 @@ Java_com_example_patchnotify_NativeLlama_infer(JNIEnv* env, jclass, jbyteArray j
     }
     llama_sampler_free(smpl);
 
-    if (out.empty()) {
-        size_t tp = all.find("</think>");
-        out = (tp == std::string::npos) ? all : all.substr(tp + 8);
-    }
+    // 去掉思考段（正常由 Grammar 截断，这里兜底）
+    std::string out = all;
+    size_t tp = out.find("</think>");
+    if (tp != std::string::npos) out = out.substr(tp + 8);
     // 去掉尾部标记
     const char* stops[] = {"<|im_end|>", "<|endoftext|>", "<|im_start|>"};
     for (auto* sp : stops) {

@@ -27,6 +27,7 @@ local.properties
 *.aar
 *.dylib
 *.jar
+!gradle/wrapper/gradle-wrapper.jar
 app/src/main/jniLibs/
 app/src/main/cpp/thirdparty/
 
@@ -53,3 +54,6 @@ app/src/main/assets/**/*.tenz
 
 # tenz 构建目录
 .tenz-build/
+# 主机上试跑 Python 脚本产生的缓存
+__pycache__/
+*.pyc

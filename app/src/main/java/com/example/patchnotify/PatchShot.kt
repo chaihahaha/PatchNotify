@@ -1,6 +1,7 @@
 package com.example.patchnotify
 
 import android.graphics.Bitmap
+import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 import java.text.SimpleDateFormat
@@ -28,9 +29,9 @@ object PatchShot {
     private val dirOf = ConcurrentHashMap<String, File>()
     private val used = ConcurrentHashMap<String, Long>()
     private val metaSig = ConcurrentHashMap<String, String>()
-    private var root: File? = null
-    private var dailyDir: File? = null
-    private var lastDailyAt = 0L
+    @Volatile private var root: File? = null
+    @Volatile private var dailyDir: File? = null
+    @Volatile private var lastDailyAt = 0L
     @Volatile private var frameW = 0
     @Volatile private var frameH = 0
     @Volatile var enabled = false
@@ -39,7 +40,6 @@ object PatchShot {
     private var device = ""
 
     fun init(base: File, version: String, deviceInfo: String) {
-        enabled = true
         root = File(base, "logs")
         dailyDir = File(root, "_daily")
         dailyDir?.mkdirs()
@@ -47,6 +47,8 @@ object PatchShot {
         device = deviceInfo
         // 上次整帧时间取目录里最新一张的日期，避免重启后又立刻存一张
         lastDailyAt = dailyDir?.listFiles()?.maxOfOrNull { it.lastModified() } ?: 0L
+        // 最后再打开开关：避免别的线程先看到 enabled=true、root 还是 null
+        enabled = true
     }
 
     /** 记录当前分析帧的尺寸，meta.json 里就能写出框的像素坐标 */
@@ -68,9 +70,14 @@ object PatchShot {
      * 条件/矩形/思考开关一变就新写一份 meta_<时间>.json。
      * 绝不覆盖旧文件——历史配置本身就是要留档的东西。
      */
+    private fun rulesSig(rules: List<TriggerRule>): String =
+        rules.joinToString("\u0002") {
+            "${it.id}\u0001${it.condition}\u0001${it.question}\u0001${it.think}\u0001${it.pyPath}"
+        }
+
     private fun ensureMeta(p: Patch) {
         val dir = dirFor(p) ?: return
-        val sig = "${p.ask}|${p.x},${p.y},${p.w},${p.h}|${p.think}|${p.updatedAt}"
+        val sig = "${rulesSig(p.rules)}|${p.x},${p.y},${p.w},${p.h}|${p.updatedAt}"
         if (metaSig.containsKey(p.id) && metaSig[p.id] == sig) return
         if (!metaSig.containsKey(p.id) && sig == loadSig(dir)) {
             metaSig[p.id] = sig           // 重启后配置没变，不重复写
@@ -81,8 +88,11 @@ object PatchShot {
         val o = JSONObject().apply {
             put("patch_id", p.id)
             put("title", p.title())
-            put("ask", p.ask)
-            put("think", p.think)
+            put("rules", JSONArray().apply {
+                p.rules.forEach { put(it.toJson()) }
+            })
+            put("ask", p.rules.firstOrNull()?.condition ?: "")
+            put("think", p.rules.firstOrNull()?.think ?: false)
             put("set_at", iso(if (p.updatedAt > 0) p.updatedAt else System.currentTimeMillis()))
             put("updated_at", p.updatedAt)
             put("recorded_at", isoNow())
@@ -118,8 +128,19 @@ object PatchShot {
         return try {
             val o = JSONObject(latest.readText())
             val r = o.optJSONObject("rect_normalized") ?: return null
-            "${o.optString("ask")}|${r.optDouble("x")},${r.optDouble("y")}," +
-                "${r.optDouble("w")},${r.optDouble("h")}|${o.optBoolean("think")}|${o.optLong("updated_at", 0L)}"
+            val rulesArr = o.optJSONArray("rules")
+            val rules: List<TriggerRule> = if (rulesArr != null) {
+                List(rulesArr.length()) { TriggerRule.fromJson(rulesArr.getJSONObject(it)) }
+            } else {
+                listOf(TriggerRule(
+                    condition = o.optString("ask", ""),
+                    question = "",
+                    think = o.optBoolean("think", false),
+                    pyPath = o.optString("py_path", "")
+                ))
+            }
+            "${rulesSig(rules)}|${r.optDouble("x")},${r.optDouble("y")}," +
+                "${r.optDouble("w")},${r.optDouble("h")}|${o.optLong("updated_at", 0L)}"
         } catch (_: Throwable) { null }
     }
 
@@ -164,7 +185,7 @@ object PatchShot {
 
     /** 整帧留档，一天一张；压缩在调用线程做，所以请从后台线程调用 */
     fun saveDaily(frame: Bitmap) {
-        val dir = dailyDir ?: return
+        val dir = dailyDir ?: run { frame.recycle(); return }
         lastDailyAt = System.currentTimeMillis()
         val name = SimpleDateFormat("yyyyMMdd_HHmm", Locale.US).format(Date()) + ".jpg"
         val tmp = File(dir, "$name.tmp")

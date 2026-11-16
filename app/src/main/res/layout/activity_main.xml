@@ -3,12 +3,13 @@
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:orientation="vertical"
-    android:background="#FF101418">
+    android:background="#FFFFFFFF">
 
     <FrameLayout
         android:layout_width="match_parent"
         android:layout_height="0dp"
-        android:layout_weight="1">
+        android:layout_weight="1"
+        android:background="#FF000000">
 
         <androidx.camera.view.PreviewView
             android:id="@+id/previewView"
@@ -21,35 +22,42 @@
             android:layout_height="match_parent" />
     </FrameLayout>
 
+    <View
+        android:layout_width="match_parent"
+        android:layout_height="2dp"
+        android:background="#FF000000" />
+
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:orientation="vertical"
-        android:padding="10dp"
-        android:background="#FF1B2028">
+        android:padding="12dp"
+        android:background="#FFFFFFFF">
 
         <TextView
             android:id="@+id/buildText"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:textColor="#FF7FD1FF"
-            android:textSize="11sp"
+            android:textColor="#FF333333"
+            android:textSize="12sp"
             android:text="build" />
 
         <TextView
             android:id="@+id/statusText"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:maxLines="2"
+            android:layout_marginTop="2dp"
+            android:maxLines="3"
             android:ellipsize="end"
-            android:textColor="#FFE0E0E0"
-            android:textSize="13sp"
+            android:textColor="#FF000000"
+            android:textSize="16sp"
             android:text="就绪" />
 
         <ScrollView
             android:layout_width="match_parent"
-            android:layout_height="120dp"
-            android:layout_marginTop="6dp">
+            android:layout_height="160dp"
+            android:layout_marginTop="8dp"
+            android:background="#FFFFFFFF">
 
             <LinearLayout
                 android:id="@+id/patchList"
@@ -61,11 +69,12 @@
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="6dp"
+            android:layout_marginTop="8dp"
             android:orientation="horizontal">
 
             <Button
                 android:id="@+id/btnAddPatch"
+                style="@style/FactoryButton"
                 android:layout_width="0dp"
                 android:layout_height="wrap_content"
                 android:layout_weight="1"
@@ -73,29 +82,41 @@
 
             <Button
                 android:id="@+id/btnCondition"
+                style="@style/FactoryButton"
                 android:layout_width="0dp"
                 android:layout_height="wrap_content"
                 android:layout_weight="1"
-                android:layout_marginStart="6dp"
+                android:layout_marginStart="8dp"
                 android:text="@string/btn_condition" />
 
             <Button
                 android:id="@+id/btnStartStop"
+                style="@style/FactoryButton"
                 android:layout_width="0dp"
                 android:layout_height="wrap_content"
                 android:layout_weight="1"
-                android:layout_marginStart="6dp"
+                android:layout_marginStart="8dp"
                 android:text="@string/btn_start" />
+
+            <ImageButton
+                android:id="@+id/btnTorch"
+                android:layout_width="52dp"
+                android:layout_height="52dp"
+                android:layout_marginStart="8dp"
+                android:background="@drawable/btn_factory"
+                android:contentDescription="@string/btn_torch_off"
+                android:padding="10dp"
+                android:scaleType="centerInside"
+                android:src="@drawable/ic_flashlight_off" />
         </LinearLayout>
 
         <Button
             android:id="@+id/btnStopAlert"
+            style="@style/FactoryButtonPrimary"
             android:layout_width="match_parent"
             android:layout_height="64dp"
-            android:layout_marginTop="6dp"
-            android:backgroundTint="#FFD32F2F"
-            android:textColor="#FFFFFFFF"
-            android:textSize="18sp"
+            android:layout_marginTop="8dp"
+            android:textSize="20sp"
             android:visibility="gone"
             android:text="@string/btn_stop_alert" />
     </LinearLayout>

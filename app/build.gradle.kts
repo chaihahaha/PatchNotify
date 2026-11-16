@@ -1,6 +1,8 @@
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
+    // 内置 CPython：条件命中后执行用户放在 sdcard 上的 .py
+    id("com.chaquo.python")
 }
 
 android {
@@ -47,6 +49,19 @@ android {
     // 量化的 gguf 压不动，别让 aapt 白跑一遍 deflate（也避免 >1GB 资产被标记为压缩）
     androidResources {
         noCompress.add("gguf")
+    }
+
+    // Chaquopy 自带一份 libc++_shared.so，jniLibs 里也有一份（llama.cpp 用），
+    // 两份 ABI 兼容的副本并存会触发 merge 冲突，保留先出现的那份即可。
+    packaging {
+        jniLibs.pickFirsts += "**/libc++_shared.so"
+    }
+}
+
+chaquopy {
+    defaultConfig {
+        // Chaquopy 16.1 支持 3.8~3.13；本机 buildPython 是 3.12，pyc 编译最顺
+        version = "3.12"
     }
 }
 

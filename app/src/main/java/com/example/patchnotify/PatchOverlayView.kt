@@ -5,6 +5,7 @@ import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.RectF
+import android.graphics.Typeface
 import android.util.AttributeSet
 import android.view.MotionEvent
 import android.view.View
@@ -38,18 +39,30 @@ class PatchOverlayView @JvmOverloads constructor(
 
     private val boxPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.STROKE
-        strokeWidth = 4f
+        strokeWidth = 5f
+    }
+    private val boxOuterPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        strokeWidth = 10f
+        color = Color.BLACK
     }
     private val fillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.FILL
     }
+    // 工厂现场：标签用白底黑字黑框，别再叠一层半透明黑底
     private val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        textSize = 30f
-        color = Color.WHITE
+        textSize = 16f * resources.displayMetrics.scaledDensity
+        color = Color.BLACK
+        typeface = Typeface.DEFAULT_BOLD
     }
     private val bgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.FILL
-        color = Color.argb(190, 0, 0, 0)
+        color = Color.argb(245, 255, 255, 255)
+    }
+    private val labelBorderPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        strokeWidth = 2f
+        color = Color.BLACK
     }
 
     private var downX = 0f
@@ -58,8 +71,50 @@ class PatchOverlayView @JvmOverloads constructor(
     private var curY = 0f
     private var dragging = false
 
-    fun normToPx(p: Patch): RectF =
-        RectF(p.x * width, p.y * height, (p.x + p.w) * width, (p.y + p.h) * height)
+    /**
+     * 分析帧转正后的尺寸。PreviewView 默认 FILL_CENTER：画面按 max(缩放) 铺满视图，
+     * 多出来的部分被裁掉。叠加层必须用同一个变换，否则竖屏下框选位置会整体偏移
+     * （宽高比和视图不一致时最多能偏 10% 以上，裁出来的根本不是用户框的区域）。
+     */
+    private var imageW = 0
+    private var imageH = 0
+
+    fun setImageSize(w: Int, h: Int) {
+        if (w <= 0 || h <= 0 || (w == imageW && h == imageH)) return
+        imageW = w
+        imageH = h
+        invalidate()
+    }
+
+    /** 还没拿到第一帧时不要框选：否则归一化坐标会按视图比例算，和实际画面差一截 */
+    fun hasImage(): Boolean = imageW > 0 && imageH > 0
+
+    /** 画面在视图里的实际显示矩形（FILL_CENTER） */
+    private fun contentRect(): RectF {
+        if (width <= 0 || height <= 0) return RectF()
+        if (imageW <= 0 || imageH <= 0) return RectF(0f, 0f, width.toFloat(), height.toFloat())
+        val scale = maxOf(width.toFloat() / imageW, height.toFloat() / imageH)
+        val dw = imageW * scale
+        val dh = imageH * scale
+        val left = (width - dw) / 2f
+        val top = (height - dh) / 2f
+        return RectF(left, top, left + dw, top + dh)
+    }
+
+    fun normToPx(p: Patch): RectF {
+        val c = contentRect()
+        return RectF(
+            c.left + p.x * c.width(), c.top + p.y * c.height(),
+            c.left + (p.x + p.w) * c.width(), c.top + (p.y + p.h) * c.height()
+        )
+    }
+
+    private fun viewToNorm(x: Float, y: Float): Pair<Float, Float> {
+        val c = contentRect()
+        if (c.width() <= 0f || c.height() <= 0f) return 0f to 0f
+        return ((x - c.left) / c.width()).coerceIn(0f, 1f) to
+                ((y - c.top) / c.height()).coerceIn(0f, 1f)
+    }
 
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
@@ -70,12 +125,14 @@ class PatchOverlayView @JvmOverloads constructor(
             val color = when {
                 !p.monitor -> Color.GRAY
                 hits.contains(p.id) -> Color.RED
-                else -> Color.GREEN
+                else -> Color.WHITE
             }
+            // 黑外框 + 白/红内框：在亮金属和暗背景上都看得清，且不用绿色/黄色
+            canvas.drawRect(r, boxOuterPaint)
             boxPaint.color = color
             canvas.drawRect(r, boxPaint)
 
-            fillPaint.color = (color and 0x00FFFFFF) or 0x33000000
+            fillPaint.color = (color and 0x00FFFFFF) or 0x22000000
             canvas.drawRect(r, fillPaint)
 
             val value = reads[p.id]?.raw?.replace("\n", " ")?.take(24) ?: ""
@@ -85,14 +142,18 @@ class PatchOverlayView @JvmOverloads constructor(
                 if (value.isNotEmpty()) append(": ").append(value)
             }
             val tw = textPaint.measureText(label)
-            val ty = if (r.top > 44f) r.top - 12f else r.bottom + 34f
-            canvas.drawRect(r.left, ty - 30f, r.left + tw + 16f, ty + 8f, bgPaint)
+            val th = textPaint.textSize
+            val ty = if (r.top > th + 20f) r.top - 8f else r.bottom + th + 10f
+            val box = RectF(r.left, ty - th, r.left + tw + 16f, ty + 8f)
+            canvas.drawRect(box, bgPaint)
+            canvas.drawRect(box, labelBorderPaint)
             canvas.drawText(label, r.left + 8f, ty, textPaint)
         }
 
         if (editMode && dragging) {
             val r = RectF(minOf(downX, curX), minOf(downY, curY), maxOf(downX, curX), maxOf(downY, curY))
-            boxPaint.color = Color.YELLOW
+            canvas.drawRect(r, boxOuterPaint)
+            boxPaint.color = Color.WHITE
             canvas.drawRect(r, boxPaint)
         }
     }
@@ -114,10 +175,8 @@ class PatchOverlayView @JvmOverloads constructor(
             }
             MotionEvent.ACTION_UP -> {
                 dragging = false
-                val x1 = minOf(downX, curX) / width
-                val y1 = minOf(downY, curY) / height
-                val x2 = maxOf(downX, curX) / width
-                val y2 = maxOf(downY, curY) / height
+                val (x1, y1) = viewToNorm(minOf(downX, curX), minOf(downY, curY))
+                val (x2, y2) = viewToNorm(maxOf(downX, curX), maxOf(downY, curY))
                 invalidate()
                 if (x2 - x1 > 0.02f && y2 - y1 > 0.01f) {
                     onRectDrawn?.invoke(x1, y1, x2 - x1, y2 - y1)
