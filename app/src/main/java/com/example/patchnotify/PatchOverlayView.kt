@@ -9,11 +9,15 @@ import android.graphics.Typeface
 import android.util.AttributeSet
 import android.view.MotionEvent
 import android.view.View
+import kotlin.math.abs
+import kotlin.math.max
+import kotlin.math.min
 
 /**
  * 预览上方的叠加层：
  *  - 正常模式：画出所有 patch 的框、字段名、当前识别值和命中状态
  *  - 框选模式：手指拖动出新区域，松手回调归一化矩形
+ *  - 选中模式：长按下方条件标题后显示四个角，框内拖动移动、拖角缩放
  */
 class PatchOverlayView @JvmOverloads constructor(
     context: Context,
@@ -35,7 +39,22 @@ class PatchOverlayView @JvmOverloads constructor(
             invalidate()
         }
 
+    /** 当前正在移动/缩放的方框；由 Activity 的长按标题设置 */
+    var selectedPatch: Patch? = null
+        set(value) {
+            field = value
+            if (value != null) editMode = false
+            dragKind = DRAG_NONE
+            invalidate()
+        }
+
     var onRectDrawn: ((Float, Float, Float, Float) -> Unit)? = null
+
+    /** 手指松开后回调，Activity 负责持久化并清掉旧推理缓存 */
+    var onPatchGeometryChanged: ((Patch) -> Unit)? = null
+
+    fun selectPatch(p: Patch) { selectedPatch = p }
+    fun clearSelection() { selectedPatch = null }
 
     private val boxPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.STROKE
@@ -64,12 +83,35 @@ class PatchOverlayView @JvmOverloads constructor(
         strokeWidth = 2f
         color = Color.BLACK
     }
+    private val handleFillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.FILL
+        color = Color.WHITE
+    }
+    private val handleBorderPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        strokeWidth = 3f
+        color = Color.BLACK
+    }
 
     private var downX = 0f
     private var downY = 0f
     private var curX = 0f
     private var curY = 0f
     private var dragging = false
+
+    // 选中方框后的手势状态
+    private var dragKind = DRAG_NONE
+    private var resizeCorner = -1
+    private var grabDx = 0f
+    private var grabDy = 0f
+    private var startX = 0f
+    private var startY = 0f
+    private var startW = 0f
+    private var startH = 0f
+
+    private val density = resources.displayMetrics.density
+    private val handleSize = 14f * density
+    private val handleTouch = 26f * density
 
     /**
      * 分析帧转正后的尺寸。PreviewView 默认 FILL_CENTER：画面按 max(缩放) 铺满视图，
@@ -150,6 +192,22 @@ class PatchOverlayView @JvmOverloads constructor(
             canvas.drawText(label, r.left + 8f, ty, textPaint)
         }
 
+        selectedPatch?.let { p ->
+            if (patches.none { it.id == p.id }) return@let
+            val r = normToPx(p)
+            // 四个角：白底黑框小方块，和 PowerPoint 的缩放手柄一致
+            val corners = arrayOf(
+                r.left to r.top, r.right to r.top,
+                r.left to r.bottom, r.right to r.bottom
+            )
+            for ((cx, cy) in corners) {
+                val h = RectF(cx - handleSize / 2, cy - handleSize / 2,
+                    cx + handleSize / 2, cy + handleSize / 2)
+                canvas.drawRect(h, handleFillPaint)
+                canvas.drawRect(h, handleBorderPaint)
+            }
+        }
+
         if (editMode && dragging) {
             val r = RectF(minOf(downX, curX), minOf(downY, curY), maxOf(downX, curX), maxOf(downY, curY))
             canvas.drawRect(r, boxOuterPaint)
@@ -159,7 +217,54 @@ class PatchOverlayView @JvmOverloads constructor(
     }
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
-        if (!editMode) return false
+        if (editMode) return handleNewRect(event)
+        val p = selectedPatch ?: return false
+        when (event.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                val r = normToPx(p)
+                val (nx, ny) = viewToNorm(event.x, event.y)
+                resizeCorner = cornerAt(r, event.x, event.y)
+                if (resizeCorner >= 0) {
+                    dragKind = DRAG_RESIZE
+                    startX = p.x; startY = p.y; startW = p.w; startH = p.h
+                } else if (r.contains(event.x, event.y)) {
+                    dragKind = DRAG_MOVE
+                    grabDx = p.x - nx
+                    grabDy = p.y - ny
+                } else {
+                    // 点框外退出编辑，恢复普通预览
+                    selectedPatch = null
+                    return true
+                }
+                invalidate()
+                return true
+            }
+            MotionEvent.ACTION_MOVE -> {
+                if (dragKind == DRAG_NONE) return true
+                val (nx, ny) = viewToNorm(event.x, event.y)
+                when (dragKind) {
+                    DRAG_MOVE -> {
+                        p.x = (nx + grabDx).coerceIn(0f, 1f - p.w)
+                        p.y = (ny + grabDy).coerceIn(0f, 1f - p.h)
+                    }
+                    DRAG_RESIZE -> resize(p, nx, ny)
+                }
+                invalidate()
+                return true
+            }
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                if (dragKind != DRAG_NONE) {
+                    dragKind = DRAG_NONE
+                    onPatchGeometryChanged?.invoke(p)
+                }
+                invalidate()
+                return true
+            }
+        }
+        return false
+    }
+
+    private fun handleNewRect(event: MotionEvent): Boolean {
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
                 downX = event.x; downY = event.y
@@ -190,5 +295,39 @@ class PatchOverlayView @JvmOverloads constructor(
             }
         }
         return false
+    }
+
+    private fun cornerAt(r: RectF, x: Float, y: Float): Int {
+        val xs = floatArrayOf(r.left, r.right, r.left, r.right)
+        val ys = floatArrayOf(r.top, r.top, r.bottom, r.bottom)
+        for (i in 0 until 4) {
+            if (abs(x - xs[i]) <= handleTouch && abs(y - ys[i]) <= handleTouch) return i
+        }
+        return -1
+    }
+
+    private fun resize(p: Patch, nx: Float, ny: Float) {
+        val minW = minOf(0.02f, startW)
+        val minH = minOf(0.02f, startH)
+        var left = startX
+        var top = startY
+        var right = startX + startW
+        var bottom = startY + startH
+        when (resizeCorner) {
+            0 -> { left = nx.coerceIn(0f, right - minW); top = ny.coerceIn(0f, bottom - minH) }
+            1 -> { right = nx.coerceIn(left + minW, 1f); top = ny.coerceIn(0f, bottom - minH) }
+            2 -> { left = nx.coerceIn(0f, right - minW); bottom = ny.coerceIn(top + minH, 1f) }
+            3 -> { right = nx.coerceIn(left + minW, 1f); bottom = ny.coerceIn(top + minH, 1f) }
+        }
+        p.x = left
+        p.y = top
+        p.w = right - left
+        p.h = bottom - top
+    }
+
+    companion object {
+        private const val DRAG_NONE = 0
+        private const val DRAG_MOVE = 1
+        private const val DRAG_RESIZE = 2
     }
 }

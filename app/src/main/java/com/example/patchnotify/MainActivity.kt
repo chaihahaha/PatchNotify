@@ -34,11 +34,17 @@ import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
 import com.example.patchnotify.databinding.ActivityMainBinding
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import org.json.JSONArray
+import org.json.JSONObject
 import java.io.File
+import java.text.SimpleDateFormat
+import java.util.Date
 import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArrayList
@@ -136,9 +142,20 @@ class MainActivity : AppCompatActivity() {
         androidx.activity.result.contract.ActivityResultContracts.OpenDocument()
     ) { uri -> if (uri != null) onPythonPicked(uri) }
 
+    // 导出/导入方框 JSON
+    private var pendingExportPatch: Patch? = null
+    private val exportPicker = registerForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.CreateDocument("application/json")
+    ) { uri ->
+        if (uri != null) writePatchExport(uri) else pendingExportPatch = null
+    }
+    private val importPicker = registerForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.OpenDocument()
+    ) { uri -> if (uri != null) importPatchJson(uri) }
+
     companion object {
         /** 每次发版改这里，屏幕上会显示，便于确认装的是哪个包 */
-        const val BUILD_TAG = "v107-clean-ui"
+        const val BUILD_TAG = "v108-editable-boxes"
         private const val REQ_PERMS = 1001
         private const val REQ_STORAGE = 1002
         private const val FRAME_INTERVAL_MS = 250L      // 4 fps
@@ -230,6 +247,11 @@ class MainActivity : AppCompatActivity() {
         binding.btnStopAlert.setOnClickListener { onAlertStoppedByUser() }
         binding.btnTorch.isEnabled = false          // 相机起来并确认有闪光灯后才可用
         binding.btnTorch.setOnClickListener { toggleTorch() }
+        binding.btnImport.setOnClickListener {
+            importPicker.launch(arrayOf("application/json", "text/plain", "*/*"))
+        }
+        binding.btnExport.setOnClickListener { startPatchExport() }
+        binding.overlayView.onPatchGeometryChanged = { p -> onPatchGeometryChanged(p) }
 
         binding.overlayView.onRectDrawn = { x, y, w, h ->
             binding.overlayView.editMode = false
@@ -247,6 +269,10 @@ class MainActivity : AppCompatActivity() {
 
     private fun refreshPatchList() {
         runOnUiThread {
+            val sel = binding.overlayView.selectedPatch
+            if (sel != null && patches.none { it.id == sel.id }) {
+                binding.overlayView.clearSelection()
+            }
             binding.patchList.removeAllViews()
             if (patches.isEmpty()) {
                 val tv = TextView(this)
@@ -282,6 +308,17 @@ class MainActivity : AppCompatActivity() {
                         text = "● " + text
                     }
                     setOnClickListener { editConditionDialog(p) }
+                    setOnLongClickListener {
+                        val sel = binding.overlayView.selectedPatch
+                        if (sel?.id == p.id) {
+                            binding.overlayView.clearSelection()
+                            setStatus("已退出方框编辑")
+                        } else {
+                            binding.overlayView.selectPatch(p)
+                            setStatus("已选中「${p.title()}」：拖框内移动，拖四角缩放；点框外退出")
+                        }
+                        true
+                    }
                 }
                 row.addView(cb)
                 row.addView(name, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
@@ -295,6 +332,9 @@ class MainActivity : AppCompatActivity() {
                             sigByRule.remove(r.id)
                             resultByRule.remove(r.id)
                             resultAtByRule.remove(r.id)
+                        }
+                        if (binding.overlayView.selectedPatch?.id == p.id) {
+                            binding.overlayView.clearSelection()
                         }
                         hits.remove(p.id)
                         lastShown.remove(p.id)
@@ -338,9 +378,25 @@ class MainActivity : AppCompatActivity() {
             Toast.makeText(this, "相机画面还没就绪，稍等一下再框选", Toast.LENGTH_SHORT).show()
             return
         }
+        binding.overlayView.clearSelection()
         binding.overlayView.editMode = true
         setStatus("框选模式：在画面上拖动出一个矩形")
         Toast.makeText(this, "在画面上拖出一个矩形", Toast.LENGTH_SHORT).show()
+    }
+
+    /** 方框拖动/缩放结束：保存几何、清掉按旧裁剪图算出的缓存 */
+    private fun onPatchGeometryChanged(p: Patch) {
+        if (patches.none { it.id == p.id }) return
+        p.updatedAt = System.currentTimeMillis()
+        p.rules.forEach { removeRuleState(it.id) }
+        hits.remove(p.id)
+        lastShown.remove(p.id)
+        reads.remove(p.id)
+        ConfigStore.save(this, patches)
+        syncOverlay()
+        refreshPatchList()
+        setStatus("已调整「${p.title()}」的方框；条件仍可点「设条件」修改")
+        pnLog("方框调整：${p.title()} rect=${p.x},${p.y},${p.w},${p.h}")
     }
 
     private fun askFieldName(x: Float, y: Float, w: Float, h: Float) {
@@ -349,6 +405,7 @@ class MainActivity : AppCompatActivity() {
         patches.add(np)
         ConfigStore.save(this, patches)
         refreshPatchList()
+        binding.overlayView.selectPatch(np)
         editConditionDialog(np)
     }
 
@@ -683,6 +740,185 @@ class MainActivity : AppCompatActivity() {
             minOf((resources.displayMetrics.widthPixels * 0.92f).toInt(),
                 (620 * resources.displayMetrics.density).toInt()),
             android.view.ViewGroup.LayoutParams.WRAP_CONTENT)
+    }
+
+    // ---------------------------------------------------------- 方框 JSON
+
+    private fun startPatchExport() {
+        val p = binding.overlayView.selectedPatch
+            ?: patches.singleOrNull()
+        if (p == null) {
+            Toast.makeText(this, "先长按下方条件标题选中方框", Toast.LENGTH_SHORT).show()
+            return
+        }
+        if (patches.none { it.id == p.id }) {
+            Toast.makeText(this, "这个方框已被删除", Toast.LENGTH_SHORT).show()
+            return
+        }
+        pendingExportPatch = p
+        val stamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
+        val safe = p.title().replace(Regex("[\\\\/:*?\"<>|\\s]+"), "_").take(24).ifBlank { "patch" }
+        exportPicker.launch("PatchNotify_${safe}_$stamp.json")
+    }
+
+    private fun patchExportJson(p: Patch): String {
+        val root = JSONObject().apply {
+            put("format", "patchnotify.patch")
+            put("version", 1)
+            put("exported_at", SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ssZ", Locale.US).format(Date()))
+            put("app", BUILD_TAG)
+        }
+        val patch = JSONObject().apply {
+            put("title", p.title())
+            put("monitor", p.monitor)
+            put("rect_normalized", JSONObject().apply {
+                put("x", p.x.toDouble()); put("y", p.y.toDouble())
+                put("w", p.w.toDouble()); put("h", p.h.toDouble())
+            })
+            put("rules", JSONArray().apply {
+                p.rules.filter { it.condition.isNotBlank() }.forEach { r ->
+                    put(JSONObject().apply {
+                        put("condition", r.condition)
+                        put("question", r.question)
+                        put("think", r.think)
+                        put("py_path", r.pyPath)
+                    })
+                }
+            })
+        }
+        root.put("patch", patch)
+        return root.toString(2)
+    }
+
+    private fun writePatchExport(uri: Uri) {
+        val p = pendingExportPatch
+        pendingExportPatch = null
+        if (p == null) return
+        val json = try {
+            patchExportJson(p)
+        } catch (t: Throwable) {
+            Toast.makeText(this, "生成 JSON 失败：${t.message}", Toast.LENGTH_LONG).show()
+            return
+        }
+        lifecycleScope.launch {
+            val error = withContext(Dispatchers.IO) {
+                try {
+                    contentResolver.openOutputStream(uri)?.bufferedWriter()?.use { it.write(json) }
+                        ?: return@withContext "无法打开目标文件"
+                    null
+                } catch (t: Throwable) {
+                    t.message ?: t.javaClass.simpleName
+                }
+            }
+            if (error == null) {
+                setStatus("已导出「${p.title()}」的 ${p.rules.count { it.condition.isNotBlank() }} 条条件")
+                Toast.makeText(this@MainActivity, "已导出 JSON", Toast.LENGTH_SHORT).show()
+            } else {
+                Toast.makeText(this@MainActivity, "导出失败：$error", Toast.LENGTH_LONG).show()
+            }
+        }
+    }
+
+    private fun importPatchJson(uri: Uri) {
+        lifecycleScope.launch {
+            val result = withContext(Dispatchers.IO) {
+                runCatching {
+                    val text = contentResolver.openInputStream(uri)
+                        ?.bufferedReader()?.use { it.readText() }
+                        ?: error("无法读取文件")
+                    parseImportedPatches(JSONObject(text))
+                }
+            }
+            result.onSuccess { list ->
+                patches.addAll(list)
+                ConfigStore.save(this@MainActivity, patches)
+                refreshPatchList()
+                binding.overlayView.selectPatch(list.last())
+                if (list.any { p -> p.rules.any { it.pyPath.isNotBlank() } }) {
+                    PythonRunner.warmUp(applicationContext)
+                }
+                val n = list.sumOf { it.rules.count { r -> r.condition.isNotBlank() } }
+                val msg = "已导入 ${list.size} 个方框、$n 条条件"
+                setStatus("$msg；点「设条件」可修改")
+                Toast.makeText(this@MainActivity, msg, Toast.LENGTH_LONG).show()
+            }.onFailure { t ->
+                Toast.makeText(this@MainActivity, "导入失败：${t.message}", Toast.LENGTH_LONG).show()
+            }
+        }
+    }
+
+    private fun parseImportedPatches(root: JSONObject): List<Patch> {
+        val arr = root.optJSONArray("patches")
+        if (arr != null) {
+            val out = mutableListOf<Patch>()
+            var firstError: Throwable? = null
+            for (i in 0 until arr.length()) {
+                val o = arr.optJSONObject(i) ?: continue
+                try { out.add(parseImportedPatch(o)) } catch (t: Throwable) {
+                    if (firstError == null) firstError = t
+                }
+            }
+            if (out.isEmpty()) {
+                throw (firstError ?: IllegalStateException("没有可导入的方框"))
+            }
+            return out
+        }
+        val single = root.optJSONObject("patch") ?: root
+        return listOf(parseImportedPatch(single))
+    }
+
+    private fun parseImportedPatch(o: JSONObject): Patch {
+        val rect = o.optJSONObject("rect_normalized") ?: o.optJSONObject("rect") ?: o
+        val x0 = rect.optDouble("x", o.optDouble("x", Double.NaN))
+        val y0 = rect.optDouble("y", o.optDouble("y", Double.NaN))
+        val w0 = rect.optDouble("w", o.optDouble("w", Double.NaN))
+        val h0 = rect.optDouble("h", o.optDouble("h", Double.NaN))
+        if (!x0.isFinite() || !y0.isFinite() || !w0.isFinite() || !h0.isFinite() ||
+            w0 <= 0.0 || h0 <= 0.0) {
+            throw IllegalArgumentException("方框坐标无效")
+        }
+        var x = x0.toFloat().coerceIn(0f, 0.98f)
+        var y = y0.toFloat().coerceIn(0f, 0.98f)
+        var w = w0.toFloat().coerceIn(0.01f, 1f)
+        var h = h0.toFloat().coerceIn(0.01f, 1f)
+        if (x + w > 1f) w = 1f - x
+        if (y + h > 1f) h = 1f - y
+        if (w < 0.01f || h < 0.01f) throw IllegalArgumentException("方框太小")
+
+        val rules = mutableListOf<TriggerRule>()
+        val arr = o.optJSONArray("rules")
+        if (arr != null) {
+            for (i in 0 until arr.length()) {
+                val r = arr.optJSONObject(i) ?: continue
+                val condition = r.optString("condition", "").trim()
+                if (condition.isEmpty()) continue
+                rules.add(TriggerRule(
+                    condition = condition,
+                    question = r.optString("question", "").trim(),
+                    think = r.optBoolean("think", false),
+                    pyPath = r.optString("py_path", "").trim()
+                ))
+            }
+        } else {
+            // 兼容只有 ask 的旧格式
+            val ask = o.optString("ask", "")
+            val (condition, question) = Condition.split(ask)
+            if (condition.isNotBlank()) {
+                rules.add(TriggerRule(
+                    condition = condition,
+                    question = question,
+                    think = o.optBoolean("think", false),
+                    pyPath = o.optString("py_path", "").trim()
+                ))
+            }
+        }
+        if (rules.isEmpty()) throw IllegalArgumentException("没有有效触发条件")
+        return Patch(
+            x = x, y = y, w = w, h = h,
+            monitor = o.optBoolean("monitor", true),
+            rules = rules,
+            updatedAt = System.currentTimeMillis()
+        )
     }
 
     private fun removeRuleState(ruleId: String) {

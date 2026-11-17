@@ -2,6 +2,8 @@
     <string name="app_name">PatchNotify</string>
     <string name="btn_add_patch">框选区域</string>
     <string name="btn_condition">设条件</string>
+    <string name="btn_import">导入</string>
+    <string name="btn_export">导出</string>
     <string name="btn_start">开始监控</string>
     <string name="btn_stop">停止监控</string>
     <string name="btn_stop_alert">停止播报</string>
