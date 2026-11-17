@@ -155,7 +155,7 @@ class MainActivity : AppCompatActivity() {
 
     companion object {
         /** 每次发版改这里，屏幕上会显示，便于确认装的是哪个包 */
-        const val BUILD_TAG = "v108-editable-boxes"
+        const val BUILD_TAG = "v109-selection-ui"
         private const val REQ_PERMS = 1001
         private const val REQ_STORAGE = 1002
         private const val FRAME_INTERVAL_MS = 250L      // 4 fps
@@ -252,6 +252,7 @@ class MainActivity : AppCompatActivity() {
         }
         binding.btnExport.setOnClickListener { startPatchExport() }
         binding.overlayView.onPatchGeometryChanged = { p -> onPatchGeometryChanged(p) }
+        binding.overlayView.onSelectionChanged = { p -> onBoxSelectionChanged(p) }
 
         binding.overlayView.onRectDrawn = { x, y, w, h ->
             binding.overlayView.editMode = false
@@ -312,10 +313,8 @@ class MainActivity : AppCompatActivity() {
                         val sel = binding.overlayView.selectedPatch
                         if (sel?.id == p.id) {
                             binding.overlayView.clearSelection()
-                            setStatus("已退出方框编辑")
                         } else {
                             binding.overlayView.selectPatch(p)
-                            setStatus("已选中「${p.title()}」：拖框内移动，拖四角缩放；点框外退出")
                         }
                         true
                     }
@@ -742,11 +741,20 @@ class MainActivity : AppCompatActivity() {
             android.view.ViewGroup.LayoutParams.WRAP_CONTENT)
     }
 
+    /** 选中/取消选中方框时同步导出按钮和状态提示 */
+    private fun onBoxSelectionChanged(p: Patch?) {
+        binding.btnExport.visibility = if (p != null) View.VISIBLE else View.GONE
+        if (p != null) {
+            setStatus("已选中「${p.title()}」：拖框内移动，拖四角缩放；点框外退出")
+        } else {
+            setStatus("已退出方框编辑")
+        }
+    }
+
     // ---------------------------------------------------------- 方框 JSON
 
     private fun startPatchExport() {
         val p = binding.overlayView.selectedPatch
-            ?: patches.singleOrNull()
         if (p == null) {
             Toast.makeText(this, "先长按下方条件标题选中方框", Toast.LENGTH_SHORT).show()
             return
@@ -1072,7 +1080,7 @@ class MainActivity : AppCompatActivity() {
                     }
                 }
                 afHandler.post(af)
-                setStatus("相机已启动")
+                if (binding.overlayView.selectedPatch == null) setStatus("相机已启动")
             } catch (e: Exception) {
                 setStatus("相机启动失败：${e.message}")
             }

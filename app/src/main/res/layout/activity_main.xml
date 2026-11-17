@@ -68,6 +68,7 @@
                 android:layout_marginStart="8dp"
                 android:minHeight="44dp"
                 android:textSize="13sp"
+                android:visibility="gone"
                 android:text="@string/btn_export" />
         </LinearLayout>
 

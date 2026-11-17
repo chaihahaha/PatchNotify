@@ -42,11 +42,16 @@ class PatchOverlayView @JvmOverloads constructor(
     /** 当前正在移动/缩放的方框；由 Activity 的长按标题设置 */
     var selectedPatch: Patch? = null
         set(value) {
+            val oldId = field?.id
             field = value
             if (value != null) editMode = false
             dragKind = DRAG_NONE
             invalidate()
+            if (oldId != value?.id) onSelectionChanged?.invoke(value)
         }
+
+    /** 方框被长按选中、或点框外取消选中时通知 Activity，便于显示/隐藏导出按钮和提示 */
+    var onSelectionChanged: ((Patch?) -> Unit)? = null
 
     var onRectDrawn: ((Float, Float, Float, Float) -> Unit)? = null
 
