@@ -5,6 +5,27 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.util.UUID
 
+/** 一张参考图：用户选的外部图片 + 名称/说明，供模型区分参考图与实时监控画面 */
+data class ReferenceImage(
+    var uri: String = "",
+    var name: String = "",
+    var description: String = ""
+) {
+    fun toJson(): JSONObject = JSONObject().apply {
+        put("uri", uri)
+        put("name", name)
+        put("description", description)
+    }
+
+    companion object {
+        fun fromJson(o: JSONObject) = ReferenceImage(
+            uri = o.optString("uri", ""),
+            name = o.optString("name", ""),
+            description = o.optString("description", "")
+        )
+    }
+}
+
 /**
  * 一条触发条件及其对应的动作。
  *
@@ -22,7 +43,9 @@ data class TriggerRule(
     /** 允许模型先思考再给是/否（慢，开放条件才需要） */
     var think: Boolean = false,
     /** 条件成立时额外执行的 Python 脚本绝对路径；空 = 不执行 */
-    var pyPath: String = ""
+    var pyPath: String = "",
+    /** 这一行判断时一起交给模型的外部参考图 */
+    var references: MutableList<ReferenceImage> = mutableListOf()
 ) {
     fun toJson(): JSONObject = JSONObject().apply {
         put("id", id)
@@ -30,7 +53,15 @@ data class TriggerRule(
         put("question", question)
         put("think", think)
         put("py_path", pyPath)
+        put("references", JSONArray().apply {
+            references.forEach { put(it.toJson()) }
+        })
     }
+
+    /** UI 草稿必须深拷贝引用图列表，否则取消编辑也会改到原配置 */
+    fun deepCopy(): TriggerRule = copy(
+        references = references.map { it.copy() }.toMutableList()
+    )
 
     companion object {
         fun fromJson(o: JSONObject) = TriggerRule(
@@ -38,7 +69,14 @@ data class TriggerRule(
             condition = o.optString("condition", ""),
             question = o.optString("question", ""),
             think = o.optBoolean("think", false),
-            pyPath = o.optString("py_path", "")
+            pyPath = o.optString("py_path", ""),
+            references = o.optJSONArray("references")?.let { arr ->
+                mutableListOf<ReferenceImage>().apply {
+                    for (i in 0 until arr.length()) {
+                        arr.optJSONObject(i)?.let { add(ReferenceImage.fromJson(it)) }
+                    }
+                }
+            } ?: mutableListOf()
         )
     }
 }

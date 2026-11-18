@@ -2,6 +2,7 @@ package com.example.patchnotify
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotSame
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -21,6 +22,19 @@ class PatchTest {
     fun titleFallsBackWhenNoCondition() {
         val p = Patch(rules = mutableListOf(TriggerRule(condition = "")))
         assertEquals("未设条件", p.title())
+    }
+
+    @Test
+    fun deepCopyKeepsReferencesIndependent() {
+        val original = TriggerRule(
+            condition = "和参考图1对比",
+            references = mutableListOf(ReferenceImage("content://x", "原图", "说明"))
+        )
+        val copy = original.deepCopy()
+        assertNotSame(original.references, copy.references)
+        assertNotSame(original.references[0], copy.references[0])
+        copy.references[0].name = "改过的名字"
+        assertEquals("原图", original.references[0].name)
     }
 
     @Test

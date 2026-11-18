@@ -21,6 +21,7 @@ import android.view.WindowManager
 import android.widget.Button
 import android.widget.CheckBox
 import android.widget.EditText
+import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
@@ -32,6 +33,7 @@ import androidx.camera.core.Preview
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
+import androidx.core.widget.doAfterTextChanged
 import androidx.lifecycle.lifecycleScope
 import com.example.patchnotify.databinding.ActivityMainBinding
 import kotlinx.coroutines.Dispatchers
@@ -62,7 +64,14 @@ class MainActivity : AppCompatActivity() {
         val question: EditText,
         val think: CheckBox,
         val pyToggle: CheckBox,
-        val pyPath: EditText
+        val pyPath: EditText,
+        val refToggle: CheckBox,
+        val refs: MutableList<ReferenceImage>
+    )
+
+    private data class RefEditorTarget(
+        val refs: MutableList<ReferenceImage>,
+        val rerender: () -> Unit
     )
 
     /** 轮询单位：一个 patch 的一条规则 */
@@ -132,6 +141,9 @@ class MainActivity : AppCompatActivity() {
     // 条件编辑框里的 Python 路径输入框；文件选择器返回后要写回它
     private var pyPathInput: EditText? = null
 
+    // 参考图选择器当前对应的规则行；文件选择器返回后把 URI 加进这一行
+    private var pendingRefTarget: RefEditorTarget? = null
+
     /** 选一张照片跑一遍同样的判断，用来定位相机侧的问题 */
     private val imagePicker = registerForActivityResult(
         androidx.activity.result.contract.ActivityResultContracts.GetContent()
@@ -141,6 +153,12 @@ class MainActivity : AppCompatActivity() {
     private val pyPicker = registerForActivityResult(
         androidx.activity.result.contract.ActivityResultContracts.OpenDocument()
     ) { uri -> if (uri != null) onPythonPicked(uri) }
+
+    private val refPicker = registerForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri != null) onReferencePicked(uri) else pendingRefTarget = null
+    }
 
     // 导出/导入方框 JSON
     private var pendingExportPatch: Patch? = null
@@ -155,7 +173,7 @@ class MainActivity : AppCompatActivity() {
 
     companion object {
         /** 每次发版改这里，屏幕上会显示，便于确认装的是哪个包 */
-        const val BUILD_TAG = "v109-selection-ui"
+        const val BUILD_TAG = "v110-reference-images"
         private const val REQ_PERMS = 1001
         private const val REQ_STORAGE = 1002
         private const val FRAME_INTERVAL_MS = 250L      // 4 fps
@@ -163,6 +181,7 @@ class MainActivity : AppCompatActivity() {
         private const val REARM_MS = 8000L              // 条件恢复后至少等这么久才允许再报
         private const val RING_MS = 180                 // 播报前的单次方波长度
         private const val MAX_LOG_BYTES = 2L * 1024 * 1024
+        private const val MAX_REFERENCES = 4
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -531,6 +550,140 @@ class MainActivity : AppCompatActivity() {
             })
             card.addView(fields)
 
+            // 参考图是可选的：只有勾选「参考图」后才显示添加按钮和图片列表
+            val refs = rule.references
+            val refToggle = CheckBox(this).apply {
+                text = "参考图"
+                textSize = 14f
+                setTextColor(Color.BLACK)
+                isChecked = refs.isNotEmpty()
+            }
+            var renderRefs: () -> Unit = {}
+            val addRef = factoryButton("＋ 添加", size = 13f).apply {
+                visibility = if (refToggle.isChecked) View.VISIBLE else View.GONE
+                setOnClickListener {
+                    if (refs.size >= MAX_REFERENCES) {
+                        Toast.makeText(this@MainActivity,
+                            "一条条件最多 ${MAX_REFERENCES} 张参考图", Toast.LENGTH_SHORT).show()
+                        return@setOnClickListener
+                    }
+                    pendingRefTarget = RefEditorTarget(refs) { renderRefs() }
+                    try {
+                        refPicker.launch(arrayOf("image/*"))
+                    } catch (t: Throwable) {
+                        pendingRefTarget = null
+                        Toast.makeText(this@MainActivity,
+                            "打不开图片选择器：${t.message}", Toast.LENGTH_SHORT).show()
+                    }
+                }
+            }
+            val refHeader = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+            }
+            refHeader.addView(refToggle, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+            refHeader.addView(addRef)
+            card.addView(refHeader)
+
+            val refSection = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                visibility = if (refToggle.isChecked) View.VISIBLE else View.GONE
+            }
+            refSection.addView(TextView(this).apply {
+                text = "名称/说明会写进提示词；最后一张固定叫「实时监控画面」"
+                textSize = 12f
+                setTextColor(0xFF333333.toInt())
+            })
+            val refContainer = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+            refSection.addView(refContainer)
+            card.addView(refSection)
+
+            renderRefs = {
+                refContainer.removeAllViews()
+                if (refs.isEmpty()) {
+                    refContainer.addView(TextView(this).apply {
+                        text = "还没有参考图，点「添加」从手机里选"
+                        textSize = 12f
+                        setTextColor(0xFF555555.toInt())
+                        setPadding(0, (6 * resources.displayMetrics.density).toInt(), 0, 0)
+                    })
+                } else {
+                for (ref in refs) {
+                    val row = LinearLayout(this).apply {
+                        orientation = LinearLayout.HORIZONTAL
+                        gravity = Gravity.CENTER_VERTICAL
+                        setPadding(0, (6 * resources.displayMetrics.density).toInt(),
+                            0, (6 * resources.displayMetrics.density).toInt())
+                    }
+                    val thumb = ImageView(this).apply {
+                        layoutParams = LinearLayout.LayoutParams(
+                            (64 * resources.displayMetrics.density).toInt(),
+                            (64 * resources.displayMetrics.density).toInt())
+                        scaleType = ImageView.ScaleType.CENTER_CROP
+                        setBackgroundResource(R.drawable.input_factory)
+                        setPadding(3, 3, 3, 3)
+                        contentDescription = "参考图"
+                        tag = ref.uri
+                    }
+                    lifecycleScope.launch {
+                        val b = withContext(Dispatchers.IO) {
+                            ReferenceImageLoader.load(applicationContext, ref.uri, 160)
+                        }
+                        if (b != null && thumb.tag == ref.uri && thumb.isAttachedToWindow) {
+                            thumb.setImageBitmap(b)
+                        }
+                    }
+                    val info = LinearLayout(this).apply {
+                        orientation = LinearLayout.VERTICAL
+                        setPadding((8 * resources.displayMetrics.density).toInt(), 0, 0, 0)
+                    }
+                    val nameInput = EditText(this).apply {
+                        setText(ref.name)
+                        hint = "名称/代号"
+                        textSize = 14f
+                        setTextColor(Color.BLACK)
+                        setHintTextColor(0xFF555555.toInt())
+                        setSingleLine(true)
+                        setBackgroundResource(R.drawable.input_factory)
+                        backgroundTintList = null
+                        setPadding(8, 2, 8, 2)
+                        doAfterTextChanged { ref.name = it?.toString().orEmpty() }
+                    }
+                    val descInput = EditText(this).apply {
+                        setText(ref.description)
+                        hint = "说明（可选）"
+                        textSize = 13f
+                        setTextColor(Color.BLACK)
+                        setHintTextColor(0xFF555555.toInt())
+                        setSingleLine(true)
+                        setBackgroundResource(R.drawable.input_factory)
+                        backgroundTintList = null
+                        setPadding(8, 2, 8, 2)
+                        doAfterTextChanged { ref.description = it?.toString().orEmpty() }
+                    }
+                    info.addView(nameInput, LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
+                    info.addView(descInput, LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
+                    val delRef = factoryButton("删", size = 12f).apply {
+                        setOnClickListener {
+                            refs.remove(ref)
+                            renderRefs()
+                        }
+                    }
+                    row.addView(thumb)
+                    row.addView(info, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+                    row.addView(delRef)
+                    refContainer.addView(row)
+                }
+                }
+            }
+            renderRefs()
+            refToggle.setOnCheckedChangeListener { _, checked ->
+                addRef.visibility = if (checked) View.VISIBLE else View.GONE
+                refSection.visibility = if (checked) View.VISIBLE else View.GONE
+            }
+
             val thinkBox = CheckBox(this).apply {
                 text = "思考（慢）"
                 textSize = 14f
@@ -592,7 +745,8 @@ class MainActivity : AppCompatActivity() {
                 pyRow.visibility = if (checked) View.VISIBLE else View.GONE
             }
 
-            val editor = RuleEditor(card, title, condInput, qInput, thinkBox, pyToggle, pathInput)
+            val editor = RuleEditor(card, title, condInput, qInput, thinkBox, pyToggle, pathInput,
+                refToggle, refs)
             del.setOnClickListener {
                 ruleContainer.removeView(card)
                 editors.remove(editor)
@@ -607,7 +761,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         val initial = p.rules.ifEmpty { mutableListOf(TriggerRule()) }
-        initial.forEach { addRuleEditor(it.copy()) }
+        initial.forEach { addRuleEditor(it.deepCopy()) }
 
         val scroll = android.widget.ScrollView(this).apply {
             addView(layout, android.widget.FrameLayout.LayoutParams(
@@ -634,7 +788,10 @@ class MainActivity : AppCompatActivity() {
             .setNegativeButton("取消", null)
             .create()
 
-        dialog.setOnDismissListener { pyPathInput = null }
+        dialog.setOnDismissListener {
+            pyPathInput = null
+            pendingRefTarget = null
+        }
         dialog.setOnShowListener {
             // 两列在手机上容易挤，尽量接近屏幕宽度，但不铺满平板
             val density = resources.displayMetrics.density
@@ -661,9 +818,15 @@ class MainActivity : AppCompatActivity() {
                         if (error == null) error = "第 ${i + 1} 行：触发条件不能为空"
                         return@forEachIndexed
                     }
+                    val refs = if (e.refToggle.isChecked) {
+                        e.refs.filter { it.uri.isNotBlank() }.map {
+                            ReferenceImage(uri = it.uri, name = it.name.trim(),
+                                description = it.description.trim())
+                        }.toMutableList()
+                    } else mutableListOf()
                     // 保存时换新 id：旧 id 的推理结果即使迟到也不会被当成新配置
                     out.add(TriggerRule(condition = condition, question = question,
-                        think = e.think.isChecked, pyPath = py))
+                        think = e.think.isChecked, pyPath = py, references = refs))
                 }
                 if (error != null) {
                     Toast.makeText(this, error, Toast.LENGTH_LONG).show()
@@ -713,6 +876,8 @@ class MainActivity : AppCompatActivity() {
                    "问题：条件成立后要模型回答并语音播报的内容；留空只响提示音。\n" +
                    "例：还需要充多久？\n\n" +
                    "思考：让模型先推理再回答，慢约 10 秒，开放式条件才需要。\n\n" +
+                   "参考图：勾选后才可添加；名称/说明会写进提示词。最后一张固定叫「实时监控画面」，\n" +
+                   "思考时只描述这张实时画面，参考图只用于对比。\n\n" +
                    "Python 动作：勾选后才显示脚本路径；这一行命中时执行脚本。\n" +
                    "脚本变量：PATCH_TITLE / PATCH_CONDITION / PATCH_QUESTION / PATCH_ANSWER / " +
                    "PATCH_ID / APP_FILES_DIR / SCRIPT_PATH。"
@@ -790,6 +955,9 @@ class MainActivity : AppCompatActivity() {
                         put("question", r.question)
                         put("think", r.think)
                         put("py_path", r.pyPath)
+                        put("references", JSONArray().apply {
+                            r.references.forEach { put(it.toJson()) }
+                        })
                     })
                 }
             })
@@ -904,7 +1072,14 @@ class MainActivity : AppCompatActivity() {
                     condition = condition,
                     question = r.optString("question", "").trim(),
                     think = r.optBoolean("think", false),
-                    pyPath = r.optString("py_path", "").trim()
+                    pyPath = r.optString("py_path", "").trim(),
+                    references = r.optJSONArray("references")?.let { ra ->
+                        mutableListOf<ReferenceImage>().apply {
+                            for (j in 0 until ra.length()) {
+                                ra.optJSONObject(j)?.let { add(ReferenceImage.fromJson(it)) }
+                            }
+                        }
+                    } ?: mutableListOf()
                 ))
             }
         } else {
@@ -947,6 +1122,46 @@ class MainActivity : AppCompatActivity() {
             Toast.makeText(this, "Python 脚本：$path", Toast.LENGTH_LONG).show()
         } catch (t: Throwable) {
             Toast.makeText(this, "读取脚本失败：${t.message}", Toast.LENGTH_LONG).show()
+        }
+    }
+
+    private fun onReferencePicked(uri: Uri) {
+        val target = pendingRefTarget ?: return
+        pendingRefTarget = null
+        var storedUri = uri.toString()
+        try {
+            contentResolver.takePersistableUriPermission(
+                uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        } catch (t: Throwable) {
+            // 文件管理器不支持持久授权时，复制到 App 私有目录，避免重启后读不到
+            pnLog("参考图持久授权失败，改为复制: ${t.message}")
+            copyReferenceToPrivate(uri)?.let { storedUri = it }
+        }
+        if (target.refs.any { it.uri == storedUri }) {
+            Toast.makeText(this, "这张图已经添加过了", Toast.LENGTH_SHORT).show()
+            target.rerender()
+            return
+        }
+        if (target.refs.size >= MAX_REFERENCES) {
+            Toast.makeText(this, "一条条件最多 ${MAX_REFERENCES} 张参考图", Toast.LENGTH_SHORT).show()
+            return
+        }
+        target.refs.add(ReferenceImage(uri = storedUri))
+        target.rerender()
+        Toast.makeText(this, "已添加参考图", Toast.LENGTH_SHORT).show()
+    }
+
+    private fun copyReferenceToPrivate(uri: Uri): String? {
+        return try {
+            val dir = File(filesDir, "refs").apply { mkdirs() }
+            val out = File(dir, "ref_${System.currentTimeMillis()}.jpg")
+            contentResolver.openInputStream(uri)?.use { input ->
+                out.outputStream().use { output -> input.copyTo(output) }
+            } ?: return null
+            out.absolutePath
+        } catch (t: Throwable) {
+            pnLog("复制参考图失败: ${t.message}")
+            null
         }
     }
 
@@ -1326,7 +1541,10 @@ class MainActivity : AppCompatActivity() {
                             }
                             val cached = resultByRule[rule.id]
                             val cachedAt = resultAtByRule[rule.id] ?: 0L
-                            if (!changed && cached != null && !cached.startsWith("ERR") &&
+                            val refInputs = loadReferenceInputs(rule)
+                            if (refInputs == null) {
+                                r = "ERR:参考图不可读"
+                            } else if (!changed && cached != null && !cached.startsWith("ERR") &&
                                 SystemClock.elapsedRealtime() - cachedAt < 120_000) {
                                 r = cached
                                 pnLog("local: 画面未变化，复用「$r」")
@@ -1344,10 +1562,12 @@ class MainActivity : AppCompatActivity() {
                                 }
                                 val rgb = bmp.toRgbBytes()
                                 val tInfer = SystemClock.elapsedRealtime()
-                                r = Vlm.ask(rgb, bw, bh, rule.condition, rule.question, rule.think)
+                                r = Vlm.ask(rgb, bw, bh, rule.condition, rule.question,
+                                    references = refInputs, allowThink = rule.think)
                                 if (r.startsWith("ERR:THINK_TRUNC")) {
                                     pnLog("local: 思考被截断，改用不思考重跑一次")
-                                    r = Vlm.ask(rgb, bw, bh, rule.condition, rule.question, false)
+                                    r = Vlm.ask(rgb, bw, bh, rule.condition, rule.question,
+                                        references = refInputs, allowThink = false)
                                 }
                                 if (r.startsWith("ERR:TOOBIG:")) {
                                     val a = r.split(":")
@@ -1377,14 +1597,18 @@ class MainActivity : AppCompatActivity() {
                                 var ans = try {
                                     // openAnswer：这句是问答，不是是/否判断
                                     // 条件和问题分开传，questionPrompt 会一起放进提示词
-                                    Vlm.ask(bmp.toRgbBytes(), bw, bh, rule.condition, q, rule.think, openAnswer = true).trim()
+                                    Vlm.ask(bmp.toRgbBytes(), bw, bh, rule.condition, q,
+                                        references = refInputs.orEmpty(), allowThink = rule.think,
+                                        openAnswer = true).trim()
                                 } catch (e: Throwable) { "ERR:" + e.message }
                                 pnLog("local: 追问「$q」→ 「$ans」 用时 ${(SystemClock.elapsedRealtime() - t1) / 1000.0}s")
                                 // 思考模式被截断 / 返回空 → 换成不思考再问一次，别让答案变成空
                                 if (ans.isBlank() || ans.startsWith("ERR")) {
                                     val t2 = SystemClock.elapsedRealtime()
                                     val retry = try {
-                                        Vlm.ask(bmp.toRgbBytes(), bw, bh, rule.condition, q, false, openAnswer = true).trim()
+                                        Vlm.ask(bmp.toRgbBytes(), bw, bh, rule.condition, q,
+                                            references = refInputs.orEmpty(), allowThink = false,
+                                            openAnswer = true).trim()
                                     } catch (e: Throwable) { "ERR:" + e.message }
                                     pnLog("local: 追问重试(不思考) 「${retry}」 用时 ${(SystemClock.elapsedRealtime() - t2) / 1000.0}s")
                                     if (retry.isNotBlank() && !retry.startsWith("ERR")) ans = retry
@@ -1471,6 +1695,29 @@ class MainActivity : AppCompatActivity() {
         return Bitmap.createBitmap(src, 0, 0, src.width, src.height, m, true)
     }
 
+    /** 读取这一行配置的参考图；任何一张读不到就返回 null，避免静默少图导致判断错位 */
+    private fun loadReferenceInputs(rule: TriggerRule): List<VlmReferenceInput>? {
+        if (rule.references.isEmpty()) return emptyList()
+        val out = ArrayList<VlmReferenceInput>()
+        for (ref in rule.references.take(MAX_REFERENCES)) {
+            if (ref.uri.isBlank()) {
+                pnLog("参考图路径为空，跳过判断")
+                return null
+            }
+            val bmp = ReferenceImageLoader.load(applicationContext, ref.uri, 384)
+            if (bmp == null) {
+                pnLog("参考图读取失败：${ref.uri}")
+                return null
+            }
+            out.add(VlmReferenceInput(
+                image = VlmImageInput(bmp.toRgbBytes(), bmp.width, bmp.height),
+                name = ref.name.trim(),
+                description = ref.description.trim()
+            ))
+        }
+        return out
+    }
+
     private fun Bitmap.toRgbBytes(): ByteArray {
         val w = width
         val h = height
@@ -1515,7 +1762,7 @@ class MainActivity : AppCompatActivity() {
                     // 也不用封闭问句（那会把提示词改成「只回答是或否」）
                     "OK:" + w + "x" + h + "\u0001" + Vlm.ask(
                         img.toRgbBytes(), w, h, "", "描述这张图，有文字或数字就原样读出来",
-                        false, openAnswer = true
+                        allowThink = false, openAnswer = true
                     )
                 } catch (e: Exception) {
                     "ERR:" + e.message

@@ -107,36 +107,102 @@ Java_com_example_patchnotify_NativeLlama_setLogPath(JNIEnv* env, jclass, jstring
     g_logPath = jstr(env, p);
 }
 
-// rgb: w*h*3 字节；返回模型原始输出（已去掉 <think> 段）
+// 返回当前 mtmd 版本使用的图像占位符，Kotlin 端按「参考图...标记...实时图标记」拼接
 extern "C" JNIEXPORT jstring JNICALL
-Java_com_example_patchnotify_NativeLlama_infer(JNIEnv* env, jclass, jbyteArray jrgb,
-                                             jint w, jint h, jstring jprompt, jint maxTok,
+Java_com_example_patchnotify_NativeLlama_marker(JNIEnv* env, jclass) {
+    return env->NewStringUTF(mtmd_default_marker());
+}
+
+// images: 每张 w*h*3 的 RGB；prompt 里必须已经包含同样数量的图像占位符
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_example_patchnotify_NativeLlama_infer(JNIEnv* env, jclass, jobjectArray jimages,
+                                             jintArray jwidths, jintArray jheights,
+                                             jstring jprompt, jint maxTok,
                                              jboolean allowThink, jstring jgrammar) {
     std::lock_guard<std::mutex> lk(g_mu);
     if (!g_ctx || !g_mctx || !g_vocab) return env->NewStringUTF("ERR:not_init");
+    if (!jimages || !jwidths || !jheights) return env->NewStringUTF("ERR:bad_images");
+
+    jsize count = env->GetArrayLength(jimages);
+    if (count <= 0) return env->NewStringUTF("ERR:no_images");
+    if (env->GetArrayLength(jwidths) < count || env->GetArrayLength(jheights) < count) {
+        return env->NewStringUTF("ERR:bad_image_meta");
+    }
+    std::vector<jint> widths((size_t)count), heights((size_t)count);
+    env->GetIntArrayRegion(jwidths, 0, count, widths.data());
+    env->GetIntArrayRegion(jheights, 0, count, heights.data());
+    for (jsize i = 0; i < count; i++) {
+        if (widths[(size_t)i] <= 0 || heights[(size_t)i] <= 0) {
+            return env->NewStringUTF("ERR:bad_size");
+        }
+    }
+
+    std::vector<jbyteArray> arrays;
+    std::vector<jbyte*> datas;
+    std::vector<mtmd_bitmap*> bitmaps;
+    std::vector<const mtmd_bitmap*> bmps;
+    arrays.reserve((size_t)count);
+    datas.reserve((size_t)count);
+    bitmaps.reserve((size_t)count);
+    bmps.reserve((size_t)count);
+
+    auto cleanupImages = [&]() {
+        for (auto* b : bitmaps) if (b) mtmd_bitmap_free(b);
+        for (size_t i = 0; i < arrays.size(); i++) {
+            if (datas[i]) env->ReleaseByteArrayElements(arrays[i], datas[i], JNI_ABORT);
+        }
+        bitmaps.clear();
+        datas.clear();
+        arrays.clear();
+        bmps.clear();
+    };
+
+    for (jsize i = 0; i < count; i++) {
+        auto arr = (jbyteArray)env->GetObjectArrayElement(jimages, i);
+        if (!arr) { cleanupImages(); return env->NewStringUTF("ERR:null_image"); }
+        int w = widths[(size_t)i];
+        int h = heights[(size_t)i];
+        jsize len = env->GetArrayLength(arr);
+        if (len < (jsize)w * h * 3) {
+            env->DeleteLocalRef(arr);
+            cleanupImages();
+            return env->NewStringUTF("ERR:bad_bitmap");
+        }
+        jbyte* data = env->GetByteArrayElements(arr, nullptr);
+        if (!data) {
+            env->DeleteLocalRef(arr);
+            cleanupImages();
+            return env->NewStringUTF("ERR:bitmap_pin");
+        }
+        mtmd_bitmap* bmp = mtmd_bitmap_init((uint32_t)w, (uint32_t)h,
+                                           (const unsigned char*)data);
+        if (!bmp) {
+            env->ReleaseByteArrayElements(arr, data, JNI_ABORT);
+            env->DeleteLocalRef(arr);
+            cleanupImages();
+            return env->NewStringUTF("ERR:bitmap_init");
+        }
+        arrays.push_back(arr);
+        datas.push_back(data);
+        bitmaps.push_back(bmp);
+        bmps.push_back(bmp);
+    }
 
     std::string prompt = jstr(env, jprompt);
-    jsize n = env->GetArrayLength(jrgb);
-    if (n < (jsize)w * h * 3) return env->NewStringUTF("ERR:bad_bitmap");
-    jbyte* data = env->GetByteArrayElements(jrgb, nullptr);
-
-    // Qwen 对话格式 + 图像占位符
+    // Qwen 对话格式；图像占位符已经由 Kotlin 按图片顺序写在 prompt 里。
     // 默认关 thinking：按官方 chat template 的 no-think 分支预填空 think 块。
     // 用户勾了「允许思考」就不预填，让模型自己推理（慢，但开放式判断准得多）。
-    std::string text = std::string("<|im_start|>user\n") + mtmd_default_marker() +
-                       prompt + "<|im_end|>\n<|im_start|>assistant\n";
+    std::string text = std::string("<|im_start|>user\n") + prompt +
+                       "<|im_end|>\n<|im_start|>assistant\n";
     if (!allowThink) text += "<think>\n\n</think>\n\n";
 
     int64_t tTok0 = ggml_time_us();
-    mtmd_bitmap* bmp = mtmd_bitmap_init((uint32_t)w, (uint32_t)h, (const unsigned char*)data);
-    const mtmd_bitmap* bmps[1] = { bmp };
     mtmd_input_chunks* chunks = mtmd_input_chunks_init();
     mtmd_input_text itext{ text.c_str(), text.size(), true, true };
-    int32_t tr = mtmd_tokenize(g_mctx, chunks, &itext, bmps, 1);
+    int32_t tr = mtmd_tokenize(g_mctx, chunks, &itext, bmps.data(), bmps.size());
     if (tr != 0) {
         mtmd_input_chunks_free(chunks);
-        mtmd_bitmap_free(bmp);
-        env->ReleaseByteArrayElements(jrgb, data, JNI_ABORT);
+        cleanupImages();
         return env->NewStringUTF("ERR:tokenize");
     }
 
@@ -154,10 +220,10 @@ Java_com_example_patchnotify_NativeLlama_infer(JNIEnv* env, jclass, jbyteArray j
     }
     int64_t tPre1 = ggml_time_us();
     mtmd_input_chunks_free(chunks);
-    mtmd_bitmap_free(bmp);
-    env->ReleaseByteArrayElements(jrgb, data, JNI_ABORT);
+    cleanupImages();
     if (ev != 0) return env->NewStringUTF("ERR:prefill");
-    pnLog("cpp: prefill=%lldms tokens_in=%d", (long long)((tPre1-tTok1)/1000), (int)n_past);
+    pnLog("cpp: prefill=%lldms tokens_in=%d images=%d",
+          (long long)((tPre1-tTok1)/1000), (int)n_past, (int)count);
 
     llama_sampler* smpl = llama_sampler_chain_init(llama_sampler_chain_default_params());
     // GBNF 语法约束放在 greedy 前面：先把候选 token 裁到语法允许的集合，再挑最大概率的。
