@@ -169,7 +169,12 @@ class MainActivity : AppCompatActivity() {
     private val exportPicker = registerForActivityResult(
         androidx.activity.result.contract.ActivityResultContracts.CreateDocument("application/json")
     ) { uri ->
-        if (uri != null) writePatchExport(uri) else pendingExportPatch = null
+        if (uri != null) {
+            writePatchExport(uri)
+        } else {
+            pendingExportPatch = null
+            setStatus("已取消导出")
+        }
     }
     private val importPicker = registerForActivityResult(
         androidx.activity.result.contract.ActivityResultContracts.OpenDocument()
@@ -177,7 +182,7 @@ class MainActivity : AppCompatActivity() {
 
     companion object {
         /** 每次发版改这里，屏幕上会显示，便于确认装的是哪个包 */
-        const val BUILD_TAG = "v111-embedded-json"
+        const val BUILD_TAG = "v112-strict-json"
         private const val REQ_PERMS = 1001
         private const val REQ_STORAGE = 1002
         private const val FRAME_INTERVAL_MS = 250L      // 4 fps
@@ -932,10 +937,40 @@ class MainActivity : AppCompatActivity() {
             Toast.makeText(this, "这个方框已被删除", Toast.LENGTH_SHORT).show()
             return
         }
-        pendingExportPatch = p
-        val stamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
+        // 先检查所有参考图/Python 文件，缺文件时不要先弹保存对话框
+        setStatus("正在检查导出文件……")
+        lifecycleScope.launch {
+            val error = withContext(Dispatchers.IO) { validateExportFiles(p) }
+            if (error != null) {
+                pendingExportPatch = null
+                setStatus(error)
+                Toast.makeText(this@MainActivity, error, Toast.LENGTH_LONG).show()
+                return@launch
+            }
+            pendingExportPatch = p
+            val stamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
         val safe = p.title().replace(Regex("[\\\\/:*?\"<>|\\s]+"), "_").take(24).ifBlank { "patch" }
-        exportPicker.launch("PatchNotify_${safe}_$stamp.json")
+            exportPicker.launch("PatchNotify_${safe}_$stamp.json")
+        }
+    }
+
+    /** 导出前预检：任何参考图/脚本缺失，直接报错，不生成不完整 JSON */
+    private fun validateExportFiles(p: Patch): String? {
+        for (rule in p.rules) {
+            for (ref in rule.references) {
+                if (ReferenceImageLoader.load(applicationContext, ref.uri, 384) == null) {
+                    return "参考图不存在或无法读取：${ref.uri}"
+                }
+            }
+            if (rule.pyPath.isNotBlank()) {
+                val f = File(rule.pyPath)
+                if (!f.isFile || !f.canRead()) {
+                    return "Python 脚本不存在或不可读：${rule.pyPath}"
+                }
+                if (f.length() == 0L) return "Python 脚本为空：${rule.pyPath}"
+            }
+        }
+        return null
     }
 
     private fun patchExportJson(p: Patch): String {
@@ -973,13 +1008,13 @@ class MainActivity : AppCompatActivity() {
         return root.toString(2)
     }
 
-    /** 参考图嵌入 384px JPEG，体积可控，导入后仍能直接参与比较 */
+    /** 参考图嵌入 384px JPEG；任何一张读不到都让整次导出失败 */
     private fun referenceExportJson(ref: ReferenceImage): JSONObject {
-        val o = ref.toJson()
+        val src = ReferenceImageLoader.load(applicationContext, ref.uri, 384)
+            ?: throw IllegalStateException("参考图不存在或无法读取：${ref.uri}")
+        var bmp = src
+        var white: Bitmap? = null
         try {
-            val src = ReferenceImageLoader.load(applicationContext, ref.uri, 384) ?: return o
-            var bmp = src
-            var white: Bitmap? = null
             if (src.hasAlpha()) {
                 white = Bitmap.createBitmap(src.width, src.height, Bitmap.Config.ARGB_8888)
                 val c = Canvas(white)
@@ -988,27 +1023,30 @@ class MainActivity : AppCompatActivity() {
                 bmp = white
             }
             val out = ByteArrayOutputStream()
-            bmp.compress(Bitmap.CompressFormat.JPEG, 88, out)
+            if (!bmp.compress(Bitmap.CompressFormat.JPEG, 88, out)) {
+                throw IllegalStateException("参考图编码失败：${ref.uri}")
+            }
+            return ref.toJson().apply {
+                put("image_mime", "image/jpeg")
+                put("image_base64", Base64.encodeToString(out.toByteArray(), Base64.NO_WRAP))
+            }
+        } finally {
             white?.recycle()
-            o.put("image_mime", "image/jpeg")
-            o.put("image_base64", Base64.encodeToString(out.toByteArray(), Base64.NO_WRAP))
-        } catch (t: Throwable) {
-            pnLog("导出参考图失败 ${ref.uri}: ${t.message}")
         }
-        return o
     }
 
+    /** 有脚本路径就必须能读到源码并嵌入；否则整次导出失败 */
     private fun pythonExportJson(path: String): JSONObject? {
+        if (path.isBlank()) return null
         val f = File(path)
-        if (path.isBlank() || !f.isFile || !f.canRead()) return null
-        return try {
-            JSONObject().apply {
-                put("name", f.name)
-                put("code_base64", Base64.encodeToString(f.readBytes(), Base64.NO_WRAP))
-            }
-        } catch (t: Throwable) {
-            pnLog("导出 Python 失败 $path: ${t.message}")
-            null
+        if (!f.isFile || !f.canRead()) {
+            throw IllegalStateException("Python 脚本不存在或不可读：$path")
+        }
+        val bytes = f.readBytes()
+        if (bytes.isEmpty()) throw IllegalStateException("Python 脚本为空：$path")
+        return JSONObject().apply {
+            put("name", f.name)
+            put("code_base64", Base64.encodeToString(bytes, Base64.NO_WRAP))
         }
     }
 
@@ -1032,7 +1070,9 @@ class MainActivity : AppCompatActivity() {
                 Toast.makeText(this@MainActivity,
                     "$msg\nJSON ${size / 1024} KB", Toast.LENGTH_LONG).show()
             }.onFailure { t ->
-                Toast.makeText(this@MainActivity, "导出失败：${t.message}", Toast.LENGTH_LONG).show()
+                val msg = "导出失败：${t.message}"
+                setStatus(msg)
+                Toast.makeText(this@MainActivity, msg, Toast.LENGTH_LONG).show()
             }
         }
     }
@@ -1062,7 +1102,9 @@ class MainActivity : AppCompatActivity() {
                 setStatus("$msg；点「设条件」可修改")
                 Toast.makeText(this@MainActivity, msg, Toast.LENGTH_LONG).show()
             }.onFailure { t ->
-                Toast.makeText(this@MainActivity, "导入失败：${t.message}", Toast.LENGTH_LONG).show()
+                val msg = "导入失败：${t.message}"
+                setStatus(msg)
+                Toast.makeText(this@MainActivity, msg, Toast.LENGTH_LONG).show()
             }
         }
     }
@@ -1071,16 +1113,12 @@ class MainActivity : AppCompatActivity() {
         val arr = root.optJSONArray("patches")
         if (arr != null) {
             val out = mutableListOf<Patch>()
-            var firstError: Throwable? = null
             for (i in 0 until arr.length()) {
-                val o = arr.optJSONObject(i) ?: continue
-                try { out.add(parseImportedPatch(o)) } catch (t: Throwable) {
-                    if (firstError == null) firstError = t
-                }
+                val o = arr.optJSONObject(i)
+                    ?: throw IllegalArgumentException("第 ${i + 1} 个方框格式错误")
+                out.add(parseImportedPatch(o))
             }
-            if (out.isEmpty()) {
-                throw (firstError ?: IllegalStateException("没有可导入的方框"))
-            }
+            if (out.isEmpty()) throw IllegalArgumentException("没有可导入的方框")
             return out
         }
         val single = root.optJSONObject("patch") ?: root
@@ -1129,7 +1167,8 @@ class MainActivity : AppCompatActivity() {
                     condition = condition,
                     question = question,
                     think = o.optBoolean("think", false),
-                    pyPath = o.optString("py_path", "").trim()
+                    pyPath = importPythonPath(o),
+                    references = parseImportedReferences(o.optJSONArray("references"))
                 ))
             }
         }
@@ -1161,34 +1200,47 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun importPythonPath(rule: JSONObject): String {
+        val pyPath = rule.optString("py_path", "").trim()
         val py = rule.optJSONObject("python")
-        val b64 = py?.optString("code_base64", "").orEmpty()
-        if (b64.isNotEmpty() && py != null) {
-            val name = py.optString("name", "script.py")
-            val stem = name.substringAfterLast('/').substringAfterLast('\\')
-                .substringBeforeLast('.').ifBlank { "script" }
-            writeImportedFile(b64, "imported_python", "py", stem)?.let {
-                return it.absolutePath
-            }
+        if (pyPath.isBlank() && py == null) return ""
+        if (py == null) {
+            throw IllegalArgumentException("Python 脚本缺少嵌入源码，请用新版重新导出")
         }
-        return rule.optString("py_path", "").trim()
+        val b64 = py.optString("code_base64", "")
+        if (b64.isBlank()) {
+            throw IllegalArgumentException("Python 脚本缺少嵌入源码，请用新版重新导出")
+        }
+        val name = py.optString("name", "script.py")
+        val stem = name.substringAfterLast('/').substringAfterLast('\\')
+            .substringBeforeLast('.').ifBlank { "script" }
+        val file = writeImportedFile(b64, "imported_python", "py", stem)
+            ?: throw IllegalArgumentException("Python 源码 base64 解码失败")
+        return file.absolutePath
     }
 
     private fun parseImportedReferences(arr: JSONArray?): MutableList<ReferenceImage> {
         if (arr == null) return mutableListOf()
         val out = mutableListOf<ReferenceImage>()
         for (i in 0 until arr.length()) {
-            val o = arr.optJSONObject(i) ?: continue
+            val o = arr.optJSONObject(i)
+                ?: throw IllegalArgumentException("第 ${i + 1} 张参考图格式错误")
             val name = o.optString("name", "")
             val desc = o.optString("description", "")
-            var uri = o.optString("uri", "")
             val b64 = o.optString("image_base64", "")
-            if (b64.isNotEmpty()) {
-                val mime = o.optString("image_mime", "image/jpeg")
-                val ext = if (mime.contains("png", true)) "png" else "jpg"
-                writeImportedFile(b64, "refs", ext, "ref")?.let { uri = it.absolutePath }
+            if (b64.isBlank()) {
+                throw IllegalArgumentException(
+                    "参考图「${name.ifBlank { i + 1 }}」缺少嵌入图片，请用新版重新导出")
             }
-            if (uri.isNotBlank()) out.add(ReferenceImage(uri = uri, name = name, description = desc))
+            val mime = o.optString("image_mime", "image/jpeg")
+            val ext = if (mime.contains("png", true)) "png" else "jpg"
+            val file = writeImportedFile(b64, "refs", ext, "ref")
+                ?: throw IllegalArgumentException(
+                    "参考图「${name.ifBlank { i + 1 }}」base64 解码失败")
+            out.add(ReferenceImage(
+                uri = file.absolutePath,
+                name = name,
+                description = desc
+            ))
         }
         return out
     }
